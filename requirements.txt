@@ -1,0 +1,63 @@
+# Data Owner app dependencies.
+#
+# Pinned on purpose. Unpinned, a breaking release of web3 or customtkinter makes
+# every NEW install fail while existing ones keep working, so the break lands on
+# whoever downloaded most recently and on nobody who could reproduce it.
+# Versions are the ones this app is actually run and tested with.
+#
+# NOT installable with pip: Tkinter. customtkinter is a Tkinter wrapper and
+# cannot work without the interpreter's tk bindings, which ship as an OS package
+# under a different name on every distro (python3-tk, python3-tkinter, tk).
+# install.sh handles that; pip cannot.
+#
+# Derived from what App/DO actually imports, not copied from the repo-wide list:
+# IP2Location and geoip2 are used by other roles and are deliberately absent.
+
+web3==7.16.0
+eth-account==0.13.7
+cryptography==49.0.0
+
+# Drawing the two-factor QR code in the terminal during setup. Pure Python and
+# imported inside a try/except: without it setup still works, it just prints
+# the otpauth URI and the secret to type in by hand instead of a picture.
+qrcode==8.2
+
+# Where the key vault's password is kept by default: the keyring the desktop
+# already unlocks at login (Keyring/KWallet on Linux, Keychain on macOS,
+# Credential Manager on Windows). Imported inside a try/except and probed for a
+# working backend, so a machine without one simply asks for a password instead.
+keyring==25.7.0
+numpy==2.3.5; python_version < "3.12"
+numpy==2.5.0; python_version >= "3.12"
+requests==2.34.2
+
+# User interface. pillow is customtkinter's own image dependency and is named
+# here because the app imports PIL directly too. tkinterdnd2 is what makes
+# dragging a file onto the upload area work; its import is guarded, so leaving
+# it out does not break the app -- the drop area just quietly stops accepting
+# drops, which is worse than an error, and is why it is pinned here.
+customtkinter==6.0.0
+pillow==12.3.0
+tkinterdnd2==0.6.4
+
+# Optional, and imported inside try/except so the app runs without them:
+#   pystray         system tray icon; needs a tray/AppIndicator on the desktop
+#   tkintermapview  the keeper map; downloads map tiles at runtime
+# Listed so a normal install gets the full UI. Remove these two lines for a
+# headless or minimal desktop and the app still starts.
+pystray==0.19.5
+tkintermapview==1.30
+
+# Imported by the app but deliberately NOT pinned here, checked rather than
+# assumed:
+#   Crypto (pycryptodome)  only a keccak fallback for when web3 is absent, and
+#                          web3 is pinned above; it also arrives with web3
+#   Xlib (python-xlib)     arrives with pystray, and is only used to add tray
+#                          click handling on Xorg
+#   gi (PyGObject)         a probe for the AppIndicator tray backend. Needs
+#                          system libraries, so pip cannot supply it; the app
+#                          treats its absence as "that backend is unavailable"
+
+# Signed application release discovery (no automatic installation).
+tuf==7.0.1
+securesystemslib==1.6.0

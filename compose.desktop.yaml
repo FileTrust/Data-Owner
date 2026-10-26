@@ -1,0 +1,10 @@
+services:
+  node:
+    environment:
+      DISPLAY: ${DISPLAY:?Use a local X11 or XWayland desktop session}
+      XAUTHORITY: /run/filetrust/Xauthority
+    volumes:
+      - type: bind
+        source: /tmp/.X11-unix
+        target: /tmp/.X11-unix
+        read_only: true

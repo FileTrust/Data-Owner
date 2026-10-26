@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "product": "do",
+  "repository": "FileTrust/Data-Owner",
+  "metadata_tag": "filetrust-updates",
+  "channel": "stable"
+}
