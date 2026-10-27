@@ -2,8 +2,8 @@
   "files": {
     ".dockerignore": {
       "mode": 420,
-      "sha256": "b0bdc66c53282f2c80dcad4bb417dbd6c63e17b4ab1d7ac6a0beb9f8875765b7",
-      "size": 3017
+      "sha256": "0ac2f071adad0323b60fb6d1164452ee994191f28ab3b49cab2d66ac4c237852",
+      "size": 3044
     },
     ".gitignore": {
       "mode": 420,
@@ -202,13 +202,13 @@
     },
     "core/do_actions.py": {
       "mode": 420,
-      "sha256": "60bcbefcfab5c2cfe2f65458dd3e2019adc7bd8e548f5d64108a5df68c79da6a",
-      "size": 272541
+      "sha256": "d974b13cf1699721e53e001f9f80b45f7052f7027c1c9b110158d62db2dd940f",
+      "size": 273109
     },
     "core/do_chain.py": {
       "mode": 420,
-      "sha256": "390987271df1f37c5266dedb63762b6373bc19b99309850f2b294663d2842d45",
-      "size": 88179
+      "sha256": "8307abfeb676a1336335324bb4151d5d9ed4bdd7560822617543cfeeff720bb6",
+      "size": 91406
     },
     "core/do_config.py": {
       "mode": 420,
@@ -257,8 +257,8 @@
     },
     "core/do_dkg_recovery.py": {
       "mode": 420,
-      "sha256": "6fbacc7b61c5009e445b3003b57304db288a25d105dc761cfc5b4fcd30d9efe3",
-      "size": 26041
+      "sha256": "ab6528b1f360041e2587f4af871205f3723aedbaeb42017f2533e39c93797196",
+      "size": 26443
     },
     "core/do_dkg_selection.py": {
       "mode": 420,
@@ -330,6 +330,11 @@
       "sha256": "a281555bf73e6b7c78b58b4764bade42062aaad27449b1a9d8ea4b7331df9837",
       "size": 51443
     },
+    "core/do_release_checks.py": {
+      "mode": 420,
+      "sha256": "7027b87ee16f9db336a9b9d1e4363f158e1632ccc6dc9af90e5402c34f634bfd",
+      "size": 6372
+    },
     "core/do_renewal.py": {
       "mode": 420,
       "sha256": "4b2e93e21bb9ec1d370de5da14aa2bfb24fda87cb32045dd9928b6d1eb80c6c9",
@@ -387,8 +392,8 @@
     },
     "core/do_vaultmesh.py": {
       "mode": 420,
-      "sha256": "2b6be6b9a6e4f67ccb0a0ef96645c20580161b6d0ed8772659039012fba87f5c",
-      "size": 176449
+      "sha256": "e7bf7ee2bce06998d460f94fa1755a3071d34994d1cde686e1ca4a6a03bb7da1",
+      "size": 177954
     },
     "core/ft_desktop_lifecycle.py": {
       "mode": 420,
@@ -412,8 +417,8 @@
     },
     "core/ft_network_config.py": {
       "mode": 420,
-      "sha256": "8f6a17d02407bf873d5382c0dbf20d5344e1d389f8d8afb662a2c98c6fef3db1",
-      "size": 28161
+      "sha256": "21355d16ab3303427e35dbed6f12f08e339034e127522e223544179a877a841b",
+      "size": 30333
     },
     "core/ft_network_http.py": {
       "mode": 420,
@@ -482,8 +487,8 @@
     },
     "ft_update_install.py": {
       "mode": 420,
-      "sha256": "cd7e8f51bbc1ca08bf37f237dc794979110c2aa506f48ef8a185002cc65a6fb4",
-      "size": 17290
+      "sha256": "464518d9db4e20312dad2a1ef44c65942c36312983f7a61549df93a6cda00403",
+      "size": 18733
     },
     "ft_update_service.py": {
       "mode": 420,

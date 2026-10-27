@@ -1720,6 +1720,11 @@ def vaultmesh_store_piece(
     }
     # Merge pre-store escrow deposit results (escrowDepositTx, escrowDepositWei, etc.)
     item.update(item_escrow)
+    # The deployment that stores this piece: its disputes go there, even after a V2 update.
+    item["vkEscrowContract"] = str(
+        (job.get("quoteInfo") or {}).get("vkEscrowContract", "")
+        or (C.vk_escrow.address if C.vk_escrow is not None else "")
+    )
 
     receipt = resp.get("privateReceipt")
     if isinstance(receipt, dict):
@@ -1942,7 +1947,9 @@ def _dispute_and_settle(
     payment_commitment: str,
 ) -> None:
     """File the storage dispute of a failed store, then settle its escrow if it is valid."""
-    disputed, reason = CH.submit_storage_dispute(receipt, commitment_nonce)
+    disputed, reason = CH.submit_storage_dispute(
+        receipt, commitment_nonce, escrow_address=str((quote_info or {}).get("vkEscrowContract", "") or "")
+    )
     if disputed:
         _settle_storage_dispute_escrow(job, receipt, quote_info, payment_commitment)
     else:
@@ -1967,6 +1974,7 @@ def _settle_storage_dispute_escrow(
         "paymentCommitment": str(payment_commitment or quote.get("paymentCommitment", "") or ""),
         "registrationCommitment": str(quote.get("registrationCommitment", "") or ""),
         "linkNonce": str(quote.get("linkNonce", "") or ""),
+        "vkEscrowContract": str(quote.get("vkEscrowContract", "") or ""),
     }
     return _settle_disputed_escrow_record(job, record)
 
@@ -1977,6 +1985,7 @@ def _settle_disputed_escrow_record(job: dict, record: dict) -> bool:
         record["paymentCommitment"],
         record["registrationCommitment"],
         record["linkNonce"],
+        escrow_address=str(record.get("vkEscrowContract", "") or ""),
     )
     record = dict(
         record,
@@ -2039,6 +2048,11 @@ def start_escrow_reconciler(interval_seconds: int = 600) -> None:
         _escrow_reconciler_started = True
 
     def _loop() -> None:
+        try:
+            from . import do_release_checks as RC
+            RC.run_checks()  # at start: may new escrows begin with this release and network?
+        except Exception as exc:
+            L.log(f"[release] start-up release checks failed to run: {exc}")
         while True:
             try:
                 reconcile_escrows()
@@ -2089,6 +2103,7 @@ def _record_admission_failure_candidate(
         "quoteSignature": quote_signature,
         "failureSignature": failure_signature,
         "linkNonce": link_nonce,
+        "vkEscrowContract": str((quote_info or {}).get("vkEscrowContract", "") or ""),
         "storeError": store_error,
         "doAddress": getattr(C.config, "DO_ADDRESS", ""),
     }
@@ -2104,6 +2119,7 @@ def _record_admission_failure_candidate(
             quote_signature,
             failure_signature,
             link_nonce=link_nonce,
+            escrow_address=record["vkEscrowContract"],
         )
         record["directDisputeSubmitted"] = bool(submitted)
         record["directDisputeResult"] = str(result or "")
@@ -2184,6 +2200,7 @@ def retry_unsent_admission_disputes() -> int:
                 str(row.get("quoteSignature", "") or ""),
                 str(row.get("failureSignature", "") or ""),
                 link_nonce=str(row.get("linkNonce", "") or ""),
+                escrow_address=str(row.get("vkEscrowContract", "") or ""),
             )
         except Exception as exc:
             submitted, result = False, str(exc)
@@ -2683,6 +2700,12 @@ def _prepare_escrow_quote(
         L.log(f"[escrow] contract registry check failed: {blocked} — deposit skipped")
         item["escrowDepositSkipped"] = f"contract registry check failed: {blocked}"
         return None
+    from . import do_release_checks as RC
+    blocked = RC.new_obligations_blocked()
+    if blocked:
+        L.log(f"[escrow] release check failed: {blocked} — deposit skipped")
+        item["escrowDepositSkipped"] = f"release check failed: {blocked}"
+        return None
     payment_commitment = quote.get("paymentCommitment", "")
     size_commitment = quote.get("sizeCommitment", "")
     link_commitment = quote.get("linkCommitment", "")
@@ -3172,7 +3195,7 @@ def _registration_timeout_call(
     From Phase 1D the resolver refunds only the registration the escrow's link
     commitment opens to, so it takes the quote's link nonce; an older one takes none.
     """
-    contract = C.storage_registration_timeout
+    contract = CH.escrow_contracts(str(quote.get("vkEscrowContract", "") or ""))["storage_registration_timeout"]
     vk = C.w3.to_checksum_address(vk_address)
     terms = (
         int(quote["priceWei"]),
@@ -3210,6 +3233,8 @@ def _resolve_registration_timeout(job: dict, peer: str) -> bool:
             "registration deadline elapsed but StorageRegistrationTimeout is not configured"
         )
     quote = job.get("quoteInfo") if isinstance(job.get("quoteInfo"), dict) else {}
+    # The escrow's own deployment: an escrow paid before a V2 settings update keeps V1.
+    timeout_contract = CH.escrow_contracts(str(quote.get("vkEscrowContract", "") or ""))["storage_registration_timeout"]
     escrow = job.get("escrow") if isinstance(job.get("escrow"), dict) else {}
     vk_address = str(quote.get("vkAddress", "") or _vk_address_from_peer(peer))
     payment_commitment = str(
@@ -3229,7 +3254,7 @@ def _resolve_registration_timeout(job: dict, peer: str) -> bool:
 
     def already_resolved() -> bool:
         return bool(
-            C.storage_registration_timeout.functions.resolvedTimeouts(timeout_id).call()
+            timeout_contract.functions.resolvedTimeouts(timeout_id).call()
         )
 
     def mark_expired(tx_hash_value: str = "") -> bool:
@@ -3260,7 +3285,7 @@ def _resolve_registration_timeout(job: dict, peer: str) -> bool:
                 actor_address=C.DO,
                 contract_name="StorageRegistrationTimeout",
                 function_name="resolveRegistrationTimeout",
-                contract_address=C.storage_registration_timeout.address,
+                contract_address=timeout_contract.address,
                 tx=tx,
                 tx_hash=tx_hash,
                 receipt=receipt,

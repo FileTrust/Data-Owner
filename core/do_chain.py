@@ -377,7 +377,7 @@ def save_vk_receipt(receipt: dict, *, commitment_hash: str) -> str:
     return path
 
 
-def submit_storage_dispute(receipt: dict, commitment_nonce: str | None = None) -> tuple[bool, str]:
+def submit_storage_dispute(receipt: dict, commitment_nonce: str | None = None, escrow_address: str = "") -> tuple[bool, str]:
     """Submit a storage receipt dispute on-chain using VK's signed receipt.
 
     The dispute names the file through the owner's commitment nonce (the argument, or the
@@ -386,10 +386,11 @@ def submit_storage_dispute(receipt: dict, commitment_nonce: str | None = None) -
     contract accepts it only when nothing was ever registered under the receipt's sector.
     A valid dispute refunds nothing by itself; the escrow is settled separately.
     Returns (ok, reason). Does not raise — caller decides whether to continue."""
+    dispute = escrow_contracts(escrow_address)["storage_receipt_dispute"]
     nonce = str(commitment_nonce or receipt.get("commitmentNonce", "") or "").strip()
     if nonce:
-        return submit_dispute_with_deletion_check(receipt, nonce)
-    if C.storage_receipt_dispute is None:
+        return submit_dispute_with_deletion_check(receipt, nonce, escrow_address=escrow_address)
+    if dispute is None:
         return False, "StorageReceiptDispute not configured"
 
     sig_hex = str(receipt.get("vkSignature", "")).strip()
@@ -418,7 +419,7 @@ def submit_storage_dispute(receipt: dict, commitment_nonce: str | None = None) -
             payment_commitment_hex, "paymentCommitment"
         )
 
-        fn = C.storage_receipt_dispute.functions.submitDispute(
+        fn = dispute.functions.submitDispute(
             receipt_version,
             receipt_nonce,
             vk_address,
@@ -1256,6 +1257,28 @@ def settle_v2_refresh_onchain(file_id: bytes, file_id_hex: str, key_epoch: int, 
     return False
 
 
+def check_policy_service_period(file_id: bytes, duration_days: int) -> bool:
+    """Validate an initial term without sending; return True if already recorded."""
+    if C.guardian_share_proof is None:
+        raise RuntimeError(
+            "GuardianShareProof is not configured; V2 policy service period cannot be verified"
+        )
+    requested_days = int(duration_days)
+    if requested_days <= 0:
+        raise RuntimeError("Guardian service period must be greater than zero days")
+    exists, _service_start, _service_end, existing_days = (
+        C.guardian_share_proof.functions.getPolicyServicePeriod(file_id).call()
+    )
+    if bool(exists) and int(existing_days) != requested_days:
+        raise RuntimeError(
+            "Guardian service period already exists with "
+            f"{int(existing_days)} day(s), requested {requested_days}; "
+            "refusing to reset the agreed service term. Use Guardian service renewal "
+            "for extra days, or a new policy for a new agreement."
+        )
+    return bool(exists)
+
+
 def register_policy_service_period(
     file_id: bytes,
     duration_days: int,
@@ -1267,34 +1290,17 @@ def register_policy_service_period(
     This method is intentionally idempotent because policy creation and service
     period registration are separate transactions. A caller may lose the RPC
     response after either transaction and must be able to resume safely.
+
+    allow_replace remains accepted for older callers, but never authorizes
+    replacing an existing term. Extensions use the funded renewal workflow.
     """
-    if C.guardian_share_proof is None:
-        raise RuntimeError(
-            "GuardianShareProof is not configured; V2 policy service period cannot be verified"
-        )
     requested_days = int(duration_days)
-    if requested_days <= 0:
-        raise RuntimeError("Guardian service period must be greater than zero days")
     try:
-        exists, _service_start, _service_end, existing_days = (
-            C.guardian_share_proof.functions.getPolicyServicePeriod(file_id).call()
-        )
-        if bool(exists):
-            if int(existing_days) == requested_days:
-                L.log(
-                    f"Guardian service period already recorded ({requested_days} day(s)); no transaction needed."
-                )
-                return
-            if not allow_replace:
-                raise RuntimeError(
-                    "Guardian service period already exists with "
-                    f"{int(existing_days)} day(s), requested {requested_days}; "
-                    "refusing to reset an active service term"
-                )
+        if check_policy_service_period(file_id, requested_days):
             L.log(
-                "Replacing Guardian service period after an explicit policy update: "
-                f"{int(existing_days)} -> {requested_days} day(s)."
+                f"Guardian service period already recorded ({requested_days} day(s)); no transaction needed."
             )
+            return
 
         L.set_status("Recording Guardian service period...", "running")
         send_signed_tx(
@@ -1873,6 +1879,59 @@ def takes_link_nonce(contract, function_name: str) -> bool:
     return any("linkNonce" in names for names in _abi_input_names(contract, function_name))
 
 
+ESCROW_CONTRACTS = {"vk_escrow": "VKEscrow", "storage_receipt_dispute": "StorageReceiptDispute",
+                    "storage_registration_timeout": "StorageRegistrationTimeout",
+                    "file_registration_sc": "FileRegistrationSC"}
+# A piece record from an app version before deployment markers: it belongs to the oldest
+# deployment the app kept, because the app can only move to another deployment with a
+# signed binding, and every version that has one also marks its new records.
+UNRECORDED = "unrecorded"
+
+
+def piece_deployment(record: dict) -> str:
+    """The deployment a stored piece belongs to: its VKEscrow address, or UNRECORDED."""
+    return str((record or {}).get("vkEscrowContract", "") or "") or UNRECORDED
+
+
+def escrow_contracts(escrow_address: str = "") -> dict:
+    """The escrow contracts of the deployment an escrow was paid into (Phase 2.5).
+
+    When a signed network binding moves the app to a new deployment, the settings
+    client records the replaced addresses and their ABI files in deployment_history.
+    An escrow paid into an earlier VKEscrow is then disputed, settled, refunded and
+    reclaimed through that deployment's contracts with that deployment's ABIs. An
+    escrow of the current VKEscrow, or no address, uses the current contracts; an
+    address with no record keeps the Phase 2 behavior (current ABI at that address)."""
+    current = {key: getattr(C, key, None) for key in ESCROW_CONTRACTS}
+    escrow = current["vk_escrow"]
+    try:
+        history = json.loads(Path(C.config.CONFIG_PATH).read_text()).get("deployment_history") or []
+    except (OSError, ValueError, AttributeError):
+        history = []
+    history = [entry for entry in (history if isinstance(history, list) else [])
+               if isinstance(entry, dict) and isinstance(entry.get("contracts"), dict)]
+
+    def kept(rows: dict) -> dict:
+        result = dict(current)
+        for key, name in ESCROW_CONTRACTS.items():
+            row = rows.get(name)
+            if isinstance(row, dict) and row.get("address") and row.get("json"):
+                abi = json.loads(Path(row["json"]).read_text())["abi"]
+                result[key] = C.w3.eth.contract(address=C.w3.to_checksum_address(row["address"]), abi=abi)
+        return result
+    if escrow_address == UNRECORDED:
+        return kept(history[0]["contracts"]) if history else current
+    if not escrow_address or escrow is None or str(escrow_address).lower() == str(escrow.address).lower():
+        return current
+    for entry in reversed(history):
+        rows = entry["contracts"]
+        if str((rows.get("VKEscrow") or {}).get("address", "")).lower() == str(escrow_address).lower():
+            return kept(rows)
+    result = dict(current)
+    result["vk_escrow"] = C.w3.eth.contract(address=C.w3.to_checksum_address(escrow_address), abi=escrow.abi)
+    return result
+
+
 def escrow_link_required() -> bool:
     """True once the deployed refund contracts take the escrow's link nonce.
 
@@ -1896,12 +1955,14 @@ def submit_admission_failure_dispute(
     quote_signature: str = "",
     failure_signature: str = "",
     link_nonce: str = "",
+    escrow_address: str = "",
 ) -> tuple[bool, str]:
     """Dispute a VK that rejected a store while admission was declared open.
 
     A contract from Phase 1D on also takes the quote's link nonce: it refunds the
     escrow only when the escrow's link commitment opens to the quoted registration."""
-    if C.storage_receipt_dispute is None:
+    dispute = escrow_contracts(escrow_address)["storage_receipt_dispute"]
+    if dispute is None:
         return False, "StorageReceiptDispute not configured"
     if not payment_commitment:
         return False, "paymentCommitment is required"
@@ -1911,7 +1972,7 @@ def submit_admission_failure_dispute(
         return False, "signed quote terms are required"
     if int(quote_valid_until or 0) <= 0 or not quote_signature or not failure_signature:
         return False, "signed quote validity evidence is required"
-    takes_link = takes_link_nonce(C.storage_receipt_dispute, "submitAdmissionFailureDispute")
+    takes_link = takes_link_nonce(dispute, "submitAdmissionFailureDispute")
     if takes_link and not link_nonce:
         return False, "the quote's link nonce is required"
 
@@ -1924,7 +1985,7 @@ def submit_admission_failure_dispute(
             else b"\x00" * 32
         )
         link_args = [_named_bytes32(link_nonce, "linkNonce")] if takes_link else []
-        fn = C.storage_receipt_dispute.functions.submitAdmissionFailureDispute(
+        fn = dispute.functions.submitAdmissionFailureDispute(
             vk_checksum,
             payment_b,
             registration_b,
@@ -1970,6 +2031,7 @@ def settle_disputed_escrow(
     payment_commitment: str,
     registration_commitment: str,
     link_nonce: str,
+    escrow_address: str = "",
 ) -> tuple[bool, str]:
     """Refund the escrow of a valid storage dispute about `receipt`.
 
@@ -1979,7 +2041,7 @@ def settle_disputed_escrow(
     registration of the disputed file. Returns (settled, reason): an escrow already
     settled counts as settled, and a reason starting with SETTLEMENT_FINAL means no
     later attempt can succeed. Does not raise."""
-    contract = C.storage_receipt_dispute
+    contract = escrow_contracts(escrow_address)["storage_receipt_dispute"]
     if contract is None:
         return False, "StorageReceiptDispute not configured"
     if not _abi_input_names(contract, "settleDisputedEscrow"):
@@ -2027,9 +2089,7 @@ def reclaim_escrow(payment_commitment: str, escrow_address: str = "") -> tuple[b
     if C.vk_escrow is None:
         return False, "VKEscrow not configured"
     try:
-        escrow = C.vk_escrow
-        if escrow_address and str(escrow_address).lower() != str(getattr(escrow, "address", "")).lower():
-            escrow = C.w3.eth.contract(address=C.w3.to_checksum_address(escrow_address), abi=escrow.abi)
+        escrow = escrow_contracts(escrow_address)["vk_escrow"]
         fn = escrow.functions.reclaimEscrow(
             _named_bytes32(payment_commitment, "paymentCommitment")
         )
@@ -2053,13 +2113,14 @@ def reclaim_escrow(payment_commitment: str, escrow_address: str = "") -> tuple[b
         return False, f"reclaim error: {exc}"
 
 
-def submit_deletion_failure_dispute(receipt: dict, commitment_nonce: str) -> tuple[bool, str]:
+def submit_deletion_failure_dispute(receipt: dict, commitment_nonce: str, escrow_address: str = "") -> tuple[bool, str]:
     """Dispute VK for failing to delete a piece after DO requested deletion.
 
     Calls StorageReceiptDispute.submitDeletionFailureDispute() on-chain.
     Returns (ok, reason).
     """
-    if C.storage_receipt_dispute is None:
+    dispute = escrow_contracts(escrow_address)["storage_receipt_dispute"]
+    if dispute is None:
         return False, "StorageReceiptDispute not configured"
 
     sig_hex = str(receipt.get("vkSignature", "")).strip()
@@ -2093,11 +2154,11 @@ def submit_deletion_failure_dispute(receipt: dict, commitment_nonce: str) -> tup
             try:
                 return bool(TX.call(
                     C,
-                    C.storage_receipt_dispute.functions.deletionDisputeFiled(
+                    dispute.functions.deletionDisputeFiled(
                         deletion_dispute_id
                     ),
                     contract_name="StorageReceiptDispute",
-                    contract_address=C.storage_receipt_dispute.address,
+                    contract_address=dispute.address,
                     commitment_hash=HX.prefixed_hex(
                         commitment_hash_b, expected_bytes=32,
                         field="deletion commitmentHash",
@@ -2109,7 +2170,7 @@ def submit_deletion_failure_dispute(receipt: dict, commitment_nonce: str) -> tup
         if already_filed():
             return True, "deletion dispute already filed on-chain"
 
-        fn = C.storage_receipt_dispute.functions.submitDeletionFailureDispute(
+        fn = dispute.functions.submitDeletionFailureDispute(
             commitment_hash_b,
             commitment_nonce_b,
             receipt_version,
@@ -2143,7 +2204,7 @@ def submit_deletion_failure_dispute(receipt: dict, commitment_nonce: str) -> tup
         return False, f"deletion failure dispute error: {exc}"
 
 
-def submit_dispute_with_deletion_check(receipt: dict, commitment_nonce: str) -> tuple[bool, str]:
+def submit_dispute_with_deletion_check(receipt: dict, commitment_nonce: str, escrow_address: str = "") -> tuple[bool, str]:
     """Submit a storage receipt dispute with deletion-awareness.
 
     Calls StorageReceiptDispute.submitDisputeWithDeletionCheck() — same as
@@ -2151,7 +2212,8 @@ def submit_dispute_with_deletion_check(receipt: dict, commitment_nonce: str) -> 
     resolve the dispute as Invalid when deletion has been confirmed on-chain.
     Returns (ok, reason).
     """
-    if C.storage_receipt_dispute is None:
+    dispute = escrow_contracts(escrow_address)["storage_receipt_dispute"]
+    if dispute is None:
         return False, "StorageReceiptDispute not configured"
 
     sig_hex = str(receipt.get("vkSignature", "")).strip()
@@ -2181,7 +2243,7 @@ def submit_dispute_with_deletion_check(receipt: dict, commitment_nonce: str) -> 
         )
         commitment_nonce_b = _named_bytes32(commitment_nonce, "commitmentNonce")
 
-        fn = C.storage_receipt_dispute.functions.submitDisputeWithDeletionCheck(
+        fn = dispute.functions.submitDisputeWithDeletionCheck(
             receipt_version,
             receipt_nonce,
             vk_address,

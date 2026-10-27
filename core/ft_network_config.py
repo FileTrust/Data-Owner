@@ -210,18 +210,28 @@ def semver(value,what):
     if not isinstance(value,str) or not SEMVER.fullmatch(value): raise ValueError('Invalid '+what)
     return tuple(int(part) for part in value.split('.'))
 
-def require_minimum_version(app,payload):
-    """The config service may name the oldest application version its network needs."""
+def minimum_requirement(app,payload):
+    """(required, installed) when the config service names a minimum for this product."""
     minimums=(payload.get('network') or {}).get('minimum_application_versions')
     name=product(app)
-    if minimums is None or name is None: return
+    if minimums is None or name is None: return None
     if not isinstance(minimums,dict): raise ValueError('Invalid minimum application versions')
-    if name not in minimums: return
-    required=semver(minimums[name],'minimum application version')
+    if name not in minimums: return None
+    semver(minimums[name],'minimum application version')
     try: installed=(Path(app)/'VERSION').read_text().strip()
     except OSError: raise ValueError('Installed application version unknown; the network minimum cannot be confirmed') from None
-    if semver(installed,'installed application version')<required:
-        raise ValueError(f'This network requires FileTrust {name} {minimums[name]} or newer (installed {installed}). '
+    semver(installed,'installed application version')
+    return minimums[name],installed
+
+def require_minimum_version(app,payload):
+    """The config service may name the oldest application version its network needs.
+
+    It is not authenticated, so it can only restrict: it blocks new network settings and
+    is recorded for the app, which corroborates it with signed release data before it
+    stops new obligations. It never selects, downloads or installs software."""
+    found=minimum_requirement(app,payload)
+    if found and semver(found[1],'installed application version')<semver(found[0],'minimum application version'):
+        raise ValueError(f'This network requires FileTrust {product(app)} {found[0]} or newer (installed {found[1]}). '
                          'Install the application update first; saved settings retained.')
 
 def network_binding(app,chain):
@@ -304,6 +314,11 @@ def check(app,home=None,force=False,initial=False):
             # Full bootstrap is public, but restrict permissions like other state.
             atomic(directory/'pending.json',{'candidate':candidate,'payload':payload,'base_sha256':digest(cfg)})
             result={'state':'blocked' if reason else ('available' if candidate['changes'] else 'current'),'changes':candidate['changes'],'content_sha256':digest(candidate),'reason':reason,'checked_at':time.time(),'next_check':time.time()+86400+random.uniform(0,3600)}
+            try: found=minimum_requirement(app,payload)
+            except ValueError: found=None
+            if found: result['minimum_version']={'required':found[0],'installed':found[1]}
+            release=(payload.get('network') or {}).get('protocol_release')
+            if isinstance(release,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}',release): result['protocol_release']=release
         except Exception:
             result={**previous,'state':'unavailable','checked_at':time.time(),'next_check':time.time()+3600+random.uniform(0,600),'message':'Network settings check unavailable; saved settings retained.'}
         atomic(directory/'status.json',result);return result
@@ -346,6 +361,21 @@ def apply(app,home=None,initial=False,gui=False):
             atomic(generation/'network-config.json',pending['payload'])
             new['network_config_snapshot']=str((generation/'network-config.json').resolve())
         for key,name in candidate['targets'].items(): new[key]=str((generation/name).resolve())
+        # Keep each replaced contract with a copy of its ABI: obligations made on the
+        # earlier deployment (V1 escrows) are still disputed, refunded and reclaimed there.
+        moved={name:prefix for prefix,name in CONTRACTS.items() if prefix+'_address' in candidate['changes'] and cfg.get(prefix+'_address')}
+        if moved:
+            entry={'replaced_at':int(time.time()),'chain_id':candidate['chain_id'],'contracts':{}}
+            for name,prefix in moved.items():
+                row={'address':cfg[prefix+'_address']}
+                if prefix+'_json' in cfg:
+                    source=Path(cfg[prefix+'_json']);source=source if source.is_absolute() else home/source
+                    if not source.is_file() and not Path(cfg[prefix+'_json']).is_absolute(): source=home/'core'/cfg[prefix+'_json']
+                    if source.is_file():
+                        kept=generation/('previous-'+name+'.json');atomic(kept,{'abi':read(source)['abi']});row['json']=str(kept.resolve())
+                entry['contracts'][name]=row
+            history=cfg.get('deployment_history') if isinstance(cfg.get('deployment_history'),list) else []
+            new['deployment_history']=[*history,entry]
         owner=(home/'config.json').stat()
         if os.geteuid()==0:
             for p in [directory,*directory.rglob('*')]:

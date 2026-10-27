@@ -236,6 +236,10 @@ def create_or_update_file_policy():
     try:
         L.set_status("Preparing file policy...", "running")
         duration_days = N.get_service_duration_days()
+        if C.POLICY_DKG_MODE == "ZKDKG_V2":
+            # Check before mutating the ACL: an existing term cannot be reset
+            # as a side effect of changing the policy's committee or threshold.
+            CH.check_policy_service_period(file_id, duration_days)
         price_rows, dkg_su, custody_su_per_day, pre_su = N.summarize_selected_guardian_prices(selected_guardians, threshold)
         unsuitable = [
             row for row in price_rows
@@ -302,7 +306,6 @@ def create_or_update_file_policy():
             CH.register_policy_service_period(
                 file_id,
                 duration_days,
-                allow_replace=bool(exists),
             )
         refresh_file_id_preview()
         show_current_file_policy()
@@ -5950,22 +5953,24 @@ def _piece_deletion_in_flight(item: dict) -> bool:
 
 def _piece_deleted_onchain(item: dict) -> bool:
     commitment_hash = _piece_commitment_hash(item)
-    status = _read_deletion_status_quiet(commitment_hash)
+    status = _read_deletion_status_quiet(commitment_hash, CH.piece_deployment(item))
     return bool(status.get("ok"))
 
 
-def _read_deletion_status_quiet(commitment_hash: str) -> dict:
+def _read_deletion_status_quiet(commitment_hash: str, escrow_address: str = "") -> dict:
+    """Deletion status from the FileRegistrationSC of the piece's deployment (Phase 2.5)."""
     result = {"declared": False, "confirmed": False, "confirmed_at": 0, "ok": False, "error": ""}
-    if C.file_registration_sc is None or not _valid_bytes32_hex(commitment_hash):
+    files = CH.escrow_contracts(escrow_address)["file_registration_sc"] if escrow_address else C.file_registration_sc
+    if files is None or not _valid_bytes32_hex(commitment_hash):
         return result
     try:
         ch_bytes = HX.hex_to_bytes(
             commitment_hash, expected_bytes=32, field="commitmentHash"
         )
-        result["declared"] = bool(C.file_registration_sc.functions.isDeletionDeclared(ch_bytes).call())
-        result["confirmed"] = bool(C.file_registration_sc.functions.isDeletionConfirmed(ch_bytes).call())
+        result["declared"] = bool(files.functions.isDeletionDeclared(ch_bytes).call())
+        result["confirmed"] = bool(files.functions.isDeletionConfirmed(ch_bytes).call())
         if result["confirmed"]:
-            result["confirmed_at"] = int(C.file_registration_sc.functions.getDeletionConfirmedAt(ch_bytes).call())
+            result["confirmed_at"] = int(files.functions.getDeletionConfirmedAt(ch_bytes).call())
         result["ok"] = result["declared"] and result["confirmed"]
     except Exception as exc:
         result["error"] = str(exc)
@@ -6537,7 +6542,7 @@ def _dispute_one_piece(commitment_hash: str) -> tuple[str, str]:
 
     # A deletion failure only exists between "I asked" and "the chain says it
     # is gone". Outside that window there is nothing for the contract to judge.
-    status = _read_deletion_status_quiet(commitment_hash)
+    status = _read_deletion_status_quiet(commitment_hash, CH.piece_deployment(item))
     if status.get("error"):
         return "failed", f"could not read the deletion status: {status['error']}"
     if not status.get("declared"):
@@ -6551,7 +6556,9 @@ def _dispute_one_piece(commitment_hash: str) -> tuple[str, str]:
         return "failed", "missing receipt or commitmentNonce — cannot dispute"
 
     try:
-        ok, message = CH.submit_deletion_failure_dispute(receipt, commitment_nonce)
+        ok, message = CH.submit_deletion_failure_dispute(
+            receipt, commitment_nonce, escrow_address=CH.piece_deployment(item)
+        )
     except Exception as exc:
         return "failed", f"dispute error: {exc}"
     return ("filed" if ok else "failed"), message
@@ -6685,7 +6692,9 @@ def _auto_dispute_deletion_failure(item: dict, receipt: dict, piece_root: str, d
         f"pieceRoot={piece_root[:20]}...  reason={delete_summary}"
     )
     L.set_status("Submitting deletion failure dispute...", "running")
-    ok, msg = CH.submit_deletion_failure_dispute(receipt, commitment_nonce)
+    ok, msg = CH.submit_deletion_failure_dispute(
+        receipt, commitment_nonce, escrow_address=CH.piece_deployment(item)
+    )
     if ok:
         L.set_status("Deletion failure dispute submitted", "ok")
         return True, f"auto dispute submitted: {msg}"

@@ -59,6 +59,25 @@ def checksum(path):
     return digest.hexdigest()
 
 
+def local_platform():
+    import platform
+    return "linux-" + {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine(), platform.machine())
+
+
+def transfer_program(root, manifest=None):
+    """The installed VaultMesh program, its pin, and the one a prepared release brings."""
+    program, pin_file = root / "core/vaultmesh", root / "vaultmesh-release.json"
+    if not pin_file.is_file():
+        return None
+    pinned = json.loads(pin_file.read_text()).get("assets", {}).get(local_platform(), {}).get("sha256")
+    installed = checksum(program) if program.is_file() else None
+    result = {"installed_sha256": installed, "pinned_sha256": pinned, "matches_pin": installed is not None and installed == pinned}
+    if manifest and manifest.get("runtime"):
+        result["release_sha256"] = manifest["runtime"]["sha256"]
+        result["replaced_by_release"] = installed != manifest["runtime"]["sha256"]
+    return result
+
+
 def load_client(root):
     product = json.loads((root / "update-source.json").read_text())["product"]
     module = importlib.import_module("core.ft_updates" if product in ("do", "req") else "ft_updates")
@@ -164,6 +183,9 @@ def prepare(root, install_dependencies=True):
         payload = staging / "code"
         bootstrap_hash = checksum(root / "ft_update_bootstrap.py")
         manifest = unpack(package, payload, client.product, descriptor["version"], bootstrap_hash)
+        runtime = manifest.get("runtime")
+        if runtime is not None and runtime.get("platform") != local_platform():
+            raise ValueError(f"This release's transfer program is for {runtime.get('platform')}; this computer is {local_platform()}. Nothing was changed")
         baseline = manifest.get("supported_bases", {}).get(client.current)
         if not isinstance(baseline, dict) or not baseline:
             raise ValueError("This release needs an intermediate/manual upgrade from your version")
@@ -303,6 +325,10 @@ def recover_or_rollback(root, rollback=False, _locked=False):
 def status(root):
     root = Path(root)
     result = {"installed": (root / "VERSION").read_text().strip()}
+    prepared = root / CONTROL / "prepared.json"
+    program = transfer_program(root, json.loads(prepared.read_text())["manifest"] if prepared.exists() else None)
+    if program is not None:
+        result["transfer_program"] = program
     for name in ("prepared.json", "journal.json", "service-transaction.json"):
         path = root / CONTROL / name
         if path.exists():

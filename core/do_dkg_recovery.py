@@ -201,6 +201,12 @@ class RecoveryController:
             policy = record(self.c.acl.functions.getDkgFilePolicy(file_id))
             if policy.exists and (not policy.active or policy.dataOwner.lower() != self.sender.account.address.lower()):
                 raise RecoveryNeedsAction('The file policy was disabled or belongs to a different wallet')
+            if op['intent']['service_days']:
+                exists, _, _, days = self.c.share_proof.functions.getPolicyServicePeriod(file_id).call()
+                if exists and days != op['intent']['service_days']:
+                    raise RecoveryNeedsAction(
+                        'The Guardian service period already exists; use funded Guardian renewal '
+                        'for extra days or a new policy for a new agreement')
             if not policy.exists:
                 seed = op['intent'].get('policy_seed')
                 if seed is None:
@@ -217,7 +223,7 @@ class RecoveryController:
                 return RecoveryProgress('policy', 'Replacement committee saved on-chain', attempt['number'])
             if op['intent']['service_days']:
                 exists, _, _, days = self.c.share_proof.functions.getPolicyServicePeriod(file_id).call()
-                if not exists or days != op['intent']['service_days']:
+                if not exists:
                     self._send(attempt['number'], 'service-period', self.c.share_proof.functions.setPolicyServicePeriod(
                         file_id, op['intent']['service_days']))
                     recorded, _, _, actual_days = self.c.share_proof.functions.getPolicyServicePeriod(file_id).call()

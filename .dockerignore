@@ -69,6 +69,7 @@
 !core/do_progress.py
 !core/do_records.py
 !core/do_recovery.py
+!core/do_release_checks.py
 !core/do_renewal.py
 !core/do_rpc.py
 !core/do_sealed_copy.py
