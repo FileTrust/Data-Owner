@@ -1983,6 +1983,28 @@ def unresolved_storage_jobs(
     return unresolved
 
 
+def jobs_with_escrow(base_dir: str | os.PathLike) -> list[dict]:
+    """Every durable upload attempt that paid an escrow, finished or not.
+
+    The escrow of each one is this owner's money until a keeper claims it or it is
+    refunded, so the escrow reconciler looks at all of them. A job file that cannot
+    be read is skipped here; the upload paths report it.
+    """
+    jobs: list[dict] = []
+    with _workspace_job_lock(base_dir) as jobs_dir:
+        for path in sorted(jobs_dir.glob("*.json")):
+            if path.name.startswith("logical-"):
+                continue
+            try:
+                job = _read_job(path, "durable upload job")
+            except TransferPending:
+                continue
+            escrow = job.get("escrow") if isinstance(job.get("escrow"), dict) else {}
+            if escrow.get("paymentCommitment"):
+                jobs.append(job)
+    return jobs
+
+
 def storage_piece_recovery_snapshot(
     base_dir: str | os.PathLike,
     pieces_dir: str | os.PathLike,

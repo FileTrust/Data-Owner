@@ -1410,6 +1410,7 @@ def build_ui():
     A.repair_recovered_pieces_once()
     A.retry_unsent_admission_disputes_once()
     VM.start_storage_verification_reconciler()
+    VM.start_escrow_reconciler()
     A.start_pending_dkg_reconciler()
     A.start_drop_folder_watcher()
     # Last, and after the window exists: it may ask a question, and a dialog

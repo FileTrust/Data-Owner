@@ -1,17 +1,18 @@
 {
   "schema": 1,
-  "tag": "vaultmesh-runtime-2026-10-26.1",
+  "tag": "vaultmesh-runtime-2026-10-27.1",
   "source": {
     "repository": "farahpoor/FileTrust-VK",
-    "tree_sha256": "e352d7f2ca9ee797229e7a08012eb3539b0622373fa146436b85494d6df5df20",
+    "tree_sha256": "81925aa4d54e7d06b15f132b385abd954a28ae9ffc20422c663e47c44f6157b8",
     "compiler": "go1.27.1",
-    "build": "CGO_ENABLED=0; -mod=readonly -trimpath -ldflags=-s -w -buildid="
+    "build": "CGO_ENABLED=0; -buildvcs=false -mod=readonly -trimpath -ldflags=-s -w -buildid=",
+    "commit": "e8f5546305c1b21261fd9e8485e806b781884a20"
   },
   "assets": {
     "linux-amd64": {
       "name": "vaultmesh-linux-amd64",
-      "size": 31871100,
-      "sha256": "5ff45b385d80ae2ecbb5ebc12fc1217fba8d0921263c476a83d48a33d531a511"
+      "size": 31875196,
+      "sha256": "432f002e52954202d4328213b482f10125cd5c9ad4da3d85c0fd646f0e8b5427"
     }
   }
 }

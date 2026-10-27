@@ -37,7 +37,7 @@
     },
     "VERSION": {
       "mode": 420,
-      "sha256": "71015c979ccb0fc8a0be7ca0ae83046ab045cdc2c8faa09fb2f0f7e440f9b4a6",
+      "sha256": "998f6b887ed7a6ef44e84210d0237b715bed42ea7254f48dc418afec0a484103",
       "size": 6
     },
     "compose.desktop.yaml": {
@@ -207,8 +207,8 @@
     },
     "core/do_chain.py": {
       "mode": 420,
-      "sha256": "15b3ea2814b60b0c589a732488a0e979ffd36909487bdf928ce188ee89f336eb",
-      "size": 80557
+      "sha256": "390987271df1f37c5266dedb63762b6373bc19b99309850f2b294663d2842d45",
+      "size": 88179
     },
     "core/do_config.py": {
       "mode": 420,
@@ -232,8 +232,8 @@
     },
     "core/do_deployment_manifest.py": {
       "mode": 420,
-      "sha256": "96def21691cb2689fc44d9d7782b2783a5ea9cfc3dbc3acc581b1f726bc81b24",
-      "size": 8455
+      "sha256": "8b292602467a9366e0f3605fe62a3b8eb7904f766e8603235a3d8ad0871513df",
+      "size": 10667
     },
     "core/do_directory.py": {
       "mode": 420,
@@ -357,8 +357,8 @@
     },
     "core/do_transfer_manager.py": {
       "mode": 420,
-      "sha256": "3c3021f6a1c3174c879fc442bcef9269a48a8505e304732f415dbc2447f3b3da",
-      "size": 99395
+      "sha256": "e618ef4afc8f21b14efb0afccc9d624223869e83ba66b2b277f64a42157f07a1",
+      "size": 100295
     },
     "core/do_tray.py": {
       "mode": 420,
@@ -377,8 +377,8 @@
     },
     "core/do_ui.py": {
       "mode": 420,
-      "sha256": "8539d82908898b7d165828b4e1711dc654a1ef419c6287541a7b8a7f29c08ec1",
-      "size": 69339
+      "sha256": "6da5878f6f355d142fa112f35282c44a8f2bc5c8ea904804018e1ffaa45d031e",
+      "size": 69372
     },
     "core/do_v2_crypto.py": {
       "mode": 420,
@@ -387,8 +387,8 @@
     },
     "core/do_vaultmesh.py": {
       "mode": 420,
-      "sha256": "0a0b6eec57a259c06a967dd09d66b81b13409c05fb1bc958ce5b1bac6a633383",
-      "size": 162292
+      "sha256": "2b6be6b9a6e4f67ccb0a0ef96645c20580161b6d0ed8772659039012fba87f5c",
+      "size": 176449
     },
     "core/ft_desktop_lifecycle.py": {
       "mode": 420,
@@ -562,8 +562,8 @@
     },
     "vaultmesh-release.json": {
       "mode": 420,
-      "sha256": "0031d7f91ebaf0cf19f097707d7b2ccb1d1b5ae3c7a494a5b2b2be7c20bd1404",
-      "size": 510
+      "sha256": "db2df6b310e1682a58dbccb0dcacaff1d99b03114f36e916c0ce640a8c9ae831",
+      "size": 584
     }
   },
   "product": "do",

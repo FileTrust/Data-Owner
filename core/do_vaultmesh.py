@@ -1856,7 +1856,7 @@ def vaultmesh_store_piece(
                 else:
                     L.log(f"[dispute] VK registered different data on-chain — submitting dispute")
                     _block_store_security_verification(item, job, ev_reason)
-                    CH.submit_storage_dispute(receipt)
+                    _dispute_and_settle(job, receipt, commitment_nonce, quote_info, payment_commitment)
                     raise RuntimeError(
                         f"FileStorageRegistered event mismatch in tx "
                         f"{receipt_reg_tx[:18]}...: {ev_reason}"
@@ -1871,7 +1871,7 @@ def vaultmesh_store_piece(
                 if not receipt_reg_tx:
                     L.log(f"[dispute] VK gave receipt but never registered on-chain — submitting dispute")
                     _block_store_security_verification(item, job, reg_reason)
-                    CH.submit_storage_dispute(receipt)
+                    _dispute_and_settle(job, receipt, commitment_nonce, quote_info, payment_commitment)
                     raise RuntimeError(
                         f"file registration not found on-chain and no tx was submitted "
                         f"(commitmentHash={receipt_commitment_hash[:18]}...): {reg_reason}"
@@ -1934,6 +1934,121 @@ def vaultmesh_store_piece(
     return item
 
 
+def _dispute_and_settle(
+    job: dict,
+    receipt: dict,
+    commitment_nonce: str,
+    quote_info: dict | None,
+    payment_commitment: str,
+) -> None:
+    """File the storage dispute of a failed store, then settle its escrow if it is valid."""
+    disputed, reason = CH.submit_storage_dispute(receipt, commitment_nonce)
+    if disputed:
+        _settle_storage_dispute_escrow(job, receipt, quote_info, payment_commitment)
+    else:
+        L.log(f"[dispute] storage dispute not filed: {reason}")
+
+
+def _settle_storage_dispute_escrow(
+    job: dict, receipt: dict, quote_info: dict | None, payment_commitment: str,
+) -> bool:
+    """Refund the escrow of a storage dispute just filed, if the chain found it valid.
+
+    A valid dispute moves no escrow (Phase 1D): the owner settles it with the quote's
+    link nonce. What the settlement needs is kept in the upload job, so the escrow
+    reconciler tries again when this attempt does not go through.
+    """
+    quote = quote_info if isinstance(quote_info, dict) else {}
+    record = {
+        "receipt": {
+            key: str(receipt.get(key, "") or "")
+            for key in ("vkAddress", "receiptNonce", "pieceRoot")
+        },
+        "paymentCommitment": str(payment_commitment or quote.get("paymentCommitment", "") or ""),
+        "registrationCommitment": str(quote.get("registrationCommitment", "") or ""),
+        "linkNonce": str(quote.get("linkNonce", "") or ""),
+    }
+    return _settle_disputed_escrow_record(job, record)
+
+
+def _settle_disputed_escrow_record(job: dict, record: dict) -> bool:
+    settled, result = CH.settle_disputed_escrow(
+        record["receipt"],
+        record["paymentCommitment"],
+        record["registrationCommitment"],
+        record["linkNonce"],
+    )
+    record = dict(
+        record,
+        settled=bool(settled),
+        result=str(result),
+        closed=bool(settled) or str(result).startswith(CH.SETTLEMENT_FINAL),
+    )
+    XFER.update_upload_job(C.BASE_DIR, job, disputedEscrow=record)
+    if not settled:
+        L.log(f"[dispute] disputed escrow not settled: {result}")
+    return bool(settled)
+
+
+def reconcile_escrows() -> None:
+    """Look again at every escrow this owner paid: settle it, take it back, or leave it.
+
+    A valid storage dispute whose escrow is not settled yet is settled first. An
+    escrow no keeper claimed is taken back once its service end and the reclaim
+    grace are over; VKEscrow decides, so one it would refuse (renewed, claimed,
+    refunded, never finalized) costs no transaction. An escrow claimed or refunded
+    is closed and not looked at again.
+    """
+    if C.vk_escrow is None:
+        return
+    grace = int(C.vk_escrow.functions.reclaimGraceSeconds().call())
+    now = latest_chain_timestamp()
+    for job in XFER.jobs_with_escrow(C.BASE_DIR):
+        disputed = job.get("disputedEscrow")
+        if isinstance(disputed, dict) and not disputed.get("closed"):
+            _settle_disputed_escrow_record(job, disputed)
+            continue
+        escrow = dict(job.get("escrow") or {})
+        quote = job.get("quoteInfo") if isinstance(job.get("quoteInfo"), dict) else {}
+        service_end = int(quote.get("serviceEnd", 0) or job.get("serviceEnd", 0) or 0)
+        if escrow.get("reclaimTx") or escrow.get("closed"):
+            continue
+        if service_end <= 0 or now < service_end + grace:
+            continue
+        reclaimed, result = CH.reclaim_escrow(
+            str(escrow["paymentCommitment"]), str(quote.get("vkEscrowContract", "") or ""),
+        )
+        if reclaimed:
+            escrow["reclaimTx"] = result
+        elif "already claimed or refunded" in result:
+            escrow["closed"] = True
+        else:
+            continue
+        XFER.update_upload_job(C.BASE_DIR, job, escrow=escrow)
+
+
+_escrow_reconciler_lock = threading.Lock()
+_escrow_reconciler_started = False
+
+
+def start_escrow_reconciler(interval_seconds: int = 600) -> None:
+    global _escrow_reconciler_started
+    with _escrow_reconciler_lock:
+        if _escrow_reconciler_started:
+            return
+        _escrow_reconciler_started = True
+
+    def _loop() -> None:
+        while True:
+            try:
+                reconcile_escrows()
+            except Exception as exc:
+                L.log(f"[escrow] escrow reconciler error: {exc}")
+            time.sleep(interval_seconds)
+
+    threading.Thread(target=_loop, name="escrow-reconciler", daemon=True).start()
+
+
 _ADMISSION_FAILURE_LOG = Path(C.BASE_DIR) / "admission_failures.jsonl"
 
 
@@ -1961,6 +2076,7 @@ def _record_admission_failure_candidate(
     quoted_price_wei = int((quote_info or {}).get("priceWei", 0) or 0)
     quote_valid_until = int((quote_info or {}).get("quoteValidUntil", 0) or 0)
     quote_signature = str((quote_info or {}).get("vkSignature", "") or "")
+    link_nonce = str((quote_info or {}).get("linkNonce", "") or "")
     record = {
         "recordedAt": datetime.datetime.utcnow().isoformat() + "Z",
         "transferId": str(job.get("transferId", "")),
@@ -1972,6 +2088,7 @@ def _record_admission_failure_candidate(
         "quoteValidUntil": quote_valid_until,
         "quoteSignature": quote_signature,
         "failureSignature": failure_signature,
+        "linkNonce": link_nonce,
         "storeError": store_error,
         "doAddress": getattr(C.config, "DO_ADDRESS", ""),
     }
@@ -1986,6 +2103,7 @@ def _record_admission_failure_candidate(
             quote_valid_until,
             quote_signature,
             failure_signature,
+            link_nonce=link_nonce,
         )
         record["directDisputeSubmitted"] = bool(submitted)
         record["directDisputeResult"] = str(result or "")
@@ -2065,6 +2183,7 @@ def retry_unsent_admission_disputes() -> int:
                 int(row.get("quoteValidUntil", 0) or 0),
                 str(row.get("quoteSignature", "") or ""),
                 str(row.get("failureSignature", "") or ""),
+                link_nonce=str(row.get("linkNonce", "") or ""),
             )
         except Exception as exc:
             submitted, result = False, str(exc)
@@ -2296,6 +2415,43 @@ def quote_refusal_retires_transfer_id(refusal: dict | None) -> bool:
     }
 
 
+# Phase 2: what this app's VaultMesh program can relay, asked once per executable file.
+_VAULTMESH_CAPABILITIES: dict = {}
+_CAPABILITY_TIMEOUT_SECONDS = 20
+
+
+def vaultmesh_relays_quote_link_nonce() -> bool:
+    """Whether this app's VaultMesh program passes the keeper's quote link nonce through.
+
+    A program built before the escrow-link change decodes the keeper's reply into a
+    structure without that field and prints it again, so the nonce is lost; it also does
+    not know the question, and any failure, timeout or unreadable answer counts as
+    unable. App updates replace the Python code, not this program (ft_transfer.py
+    installs it, release-pinned), so the answer is asked of the file on disk, and asked
+    again when that file changes.
+    """
+    path = str(C.VAULTMESH_CMD)
+    try:
+        info = os.stat(path)
+    except OSError:
+        return False
+    key = (path, info.st_size, info.st_mtime_ns)
+    if key not in _VAULTMESH_CAPABILITIES:
+        relays = False
+        try:
+            result = subprocess.run(
+                [path, "--mode", "capabilities"], capture_output=True, text=True,
+                timeout=_CAPABILITY_TIMEOUT_SECONDS,
+            )
+            if result.returncode == 0:
+                answer = json.loads(result.stdout)
+                relays = isinstance(answer, dict) and answer.get("quoteLinkNonce") is True
+        except (OSError, subprocess.SubprocessError, ValueError):
+            relays = False
+        _VAULTMESH_CAPABILITIES[key] = relays
+    return _VAULTMESH_CAPABILITIES[key]
+
+
 def _get_quote(
     peer: str, file_size: int, service_end: int, transfer_id: str = "",
     refusal: dict | None = None,
@@ -2318,6 +2474,20 @@ def _get_quote(
     if C.vk_escrow is None:
         return None
     if file_size <= 0 or service_end <= 0:
+        return None
+    # Once the refund contracts need the quote's link nonce, a VaultMesh program that
+    # drops it must not ask for quotes: each one has the keeper reserve capacity on chain
+    # for an escrow this app would then refuse to pay.
+    if CH.escrow_link_required() and not vaultmesh_relays_quote_link_nonce():
+        reason = (
+            "the transfer program is too old to relay quote link nonces; "
+            "update it (ft_transfer.py) before storing"
+        )
+        L.log(f"[escrow] {reason}")
+        if refusal is not None:
+            refusal["reason"] = reason
+            refusal["peer"] = peer
+            refusal["busy"] = False
         return None
     # The keeper issues a quote only to the owner of a real file whose key
     # generation is finished, and the signature names the keeper and the
@@ -2399,6 +2569,107 @@ def latest_chain_timestamp() -> int:
     return timestamp
 
 
+# Phase 2: the views of FileTrustAddressRegistry this check reads.
+_REGISTRY_ABI = [
+    {"type": "function", "name": "chainId", "stateMutability": "view", "inputs": [],
+     "outputs": [{"name": "", "type": "uint256"}]},
+    {"type": "function", "name": "nameOf", "stateMutability": "view",
+     "inputs": [{"name": "", "type": "address"}], "outputs": [{"name": "", "type": "bytes32"}]},
+    {"type": "function", "name": "versionOf", "stateMutability": "view",
+     "inputs": [{"name": "", "type": "address"}], "outputs": [{"name": "", "type": "uint32"}]},
+    {"type": "function", "name": "latestVersion", "stateMutability": "view",
+     "inputs": [{"name": "name", "type": "bytes32"}], "outputs": [{"name": "", "type": "uint32"}]},
+    {"type": "function", "name": "entry", "stateMutability": "view",
+     "inputs": [{"name": "name", "type": "bytes32"}, {"name": "version", "type": "uint32"}],
+     "outputs": [{"name": "", "type": "tuple", "components": [
+         {"name": "addr", "type": "address"}, {"name": "registeredAt", "type": "uint64"},
+         {"name": "status", "type": "uint8"}, {"name": "codeHash", "type": "bytes32"},
+         {"name": "abiHash", "type": "bytes32"}]}]},
+]
+_REGISTRY_CHECK: dict = {}
+_REGISTRY_CHECK_SECONDS = 600
+
+
+def registry_blocks_new_obligations() -> str:
+    """Why no new obligation may be paid for now, or "" when nothing stands against it.
+
+    Only when ADDRESS_REGISTRY_ADDRESS is configured: the contracts this DO pays and
+    refunds escrows through are checked against the on-chain registry
+    (do_deployment_manifest.verify_against_registry). A failed check, or a registry that
+    cannot be read, blocks new escrows; it never changes an address. The answer is kept
+    for ten minutes, a failure for one.
+    """
+    registry_address = str(getattr(C.config, "ADDRESS_REGISTRY_ADDRESS", "") or "").strip()
+    if not registry_address:
+        return ""
+    now = time.time()
+    cached = _REGISTRY_CHECK.get(registry_address)
+    if cached and cached[0] > now:
+        return cached[1]
+    from . import do_deployment_manifest as DM
+    pinned = {
+        name: contract.address
+        for name, contract in (
+            ("VKEscrow", C.vk_escrow),
+            ("StorageRegistrationTimeout", getattr(C, "storage_registration_timeout", None)),
+            ("StorageReceiptDispute", getattr(C, "storage_receipt_dispute", None)),
+        )
+        if contract is not None
+    }
+    try:
+        registry = C.w3.eth.contract(address=C.w3.to_checksum_address(registry_address), abi=_REGISTRY_ABI)
+        name_of = lambda raw: bytes(raw).rstrip(b"\0").decode("utf-8", "replace")
+        key_of = lambda name: name.encode("utf-8").ljust(32, b"\0")
+        result = DM.verify_against_registry(
+            pinned,
+            chain_id=int(C.w3.eth.chain_id),
+            registry_chain_id=int(registry.functions.chainId().call()),
+            lookup=lambda address: (
+                name_of(registry.functions.nameOf(address).call()),
+                int(registry.functions.versionOf(address).call()),
+            ),
+            entry=lambda name, version: dict(zip(
+                ("addr", "registeredAt", "status", "codeHash", "abiHash"),
+                registry.functions.entry(key_of(name), version).call(),
+            )),
+            latest_version=lambda name: int(registry.functions.latestVersion(key_of(name)).call()),
+            code_hash=lambda address: "0x" + bytes(Web3.keccak(C.w3.eth.get_code(address))).hex(),
+        )
+        if result["newer"]:
+            L.log(f"[registry] newer contract versions are registered: {', '.join(result['newer'])}; "
+                  "this app keeps its own until a verified update")
+        reason, ttl = "", _REGISTRY_CHECK_SECONDS
+    except DM.DeploymentManifestError as exc:
+        reason, ttl = str(exc), 60
+    except Exception as exc:
+        reason, ttl = f"address registry unavailable: {exc}", 60
+    if reason:
+        L.log(f"[registry] new escrows are blocked: {reason}")
+    _REGISTRY_CHECK[registry_address] = (now + ttl, reason)
+    return reason
+
+
+def _link_opens(
+    payment_commitment: str,
+    registration_commitment: str,
+    link_nonce: str,
+    link_commitment: str,
+) -> bool:
+    """keccak256(paymentCommitment ++ registrationCommitment ++ linkNonce) == linkCommitment."""
+    try:
+        opened = Web3.solidity_keccak(
+            ["bytes32", "bytes32", "bytes32"],
+            [
+                bytes32_from_hex(payment_commitment, "paymentCommitment"),
+                bytes32_from_hex(registration_commitment, "registrationCommitment"),
+                bytes32_from_hex(link_nonce, "linkNonce"),
+            ],
+        )
+        return bytes(opened) == bytes32_from_hex(link_commitment, "linkCommitment")
+    except Exception:
+        return False
+
+
 def _prepare_escrow_quote(
     quote: dict,
     file_size: int,
@@ -2407,6 +2678,11 @@ def _prepare_escrow_quote(
     item: dict,
     vk_expected_address: str = "",
 ) -> dict | None:
+    blocked = registry_blocks_new_obligations()
+    if blocked:
+        L.log(f"[escrow] contract registry check failed: {blocked} — deposit skipped")
+        item["escrowDepositSkipped"] = f"contract registry check failed: {blocked}"
+        return None
     payment_commitment = quote.get("paymentCommitment", "")
     size_commitment = quote.get("sizeCommitment", "")
     link_commitment = quote.get("linkCommitment", "")
@@ -2422,6 +2698,7 @@ def _prepare_escrow_quote(
     reservation_tx_hash = str(quote.get("reservationTxHash", "") or "")
     transfer_deadline = int(quote.get("transferDeadline", 0) or 0)
     quote_version = int(quote.get("quoteVersion", 0) or 0)
+    link_nonce = str(quote.get("linkNonce", "") or "")
 
     if (
         not payment_commitment or not size_commitment or not link_commitment or
@@ -2431,6 +2708,17 @@ def _prepare_escrow_quote(
         quote_version != 2
     ):
         L.log("[escrow] incomplete quote — deposit skipped")
+        return None
+    # The escrow is refunded on chain only to settle the registration its link
+    # commitment opens to (Phase 1D D18/D19); the keeper gives the nonce with the quote.
+    if link_nonce:
+        if not _link_opens(payment_commitment, registration_commitment, link_nonce, link_commitment):
+            L.log("[escrow] the quote's link nonce does not open its link commitment — deposit skipped")
+            item["escrowDepositSkipped"] = "link nonce does not open the link commitment"
+            return None
+    elif CH.escrow_link_required():
+        L.log("[escrow] quote has no link nonce, so its escrow could not be refunded — deposit skipped")
+        item["escrowDepositSkipped"] = "quote has no link nonce"
         return None
     if service_end <= 0:
         L.log("[escrow] serviceEnd missing — deposit skipped")
@@ -2584,6 +2872,10 @@ def _prepare_escrow_quote(
         "paymentCommitment": payment_commitment,
         "sizeCommitment": size_commitment,
         "linkCommitment": link_commitment,
+        "linkNonce": link_nonce,
+        # The escrow lives in this VKEscrow version for its whole life (Phase 2), so it is
+        # reclaimed there even after the app moves to a newer version.
+        "vkEscrowContract": C.w3.to_checksum_address(quote_escrow),
         "registrationCommitment": registration_commitment,
         "priceWei": price_wei,
         "serviceEnd": int(service_end),
@@ -2872,6 +3164,37 @@ def _registration_attempt_state(job: dict) -> tuple[str, str, int]:
     return "waiting", "", deadline
 
 
+def _registration_timeout_call(
+    vk_address: str, payment_bytes: bytes, registration_bytes: bytes, quote: dict,
+):
+    """The resolveRegistrationTimeout call for this V2 quote, in the deployed form.
+
+    From Phase 1D the resolver refunds only the registration the escrow's link
+    commitment opens to, so it takes the quote's link nonce; an older one takes none.
+    """
+    contract = C.storage_registration_timeout
+    vk = C.w3.to_checksum_address(vk_address)
+    terms = (
+        int(quote["priceWei"]),
+        int(quote["quoteValidUntil"]),
+        int(quote["transferDeadline"]),
+        bytes.fromhex(str(quote["vkSignature"]).removeprefix("0x")),
+    )
+    if not CH.takes_link_nonce(contract, "resolveRegistrationTimeout"):
+        return contract.functions.resolveRegistrationTimeout(
+            vk, payment_bytes, registration_bytes, *terms,
+        )
+    link_nonce = str(quote.get("linkNonce", "") or "")
+    if not link_nonce:
+        raise XFER.TransferPending(
+            "registration deadline elapsed but the quote has no link nonce; "
+            "its escrow can be taken back after the service end and grace"
+        )
+    return contract.get_function_by_signature(
+        "resolveRegistrationTimeout(address,bytes32,bytes32,bytes32,uint256,uint64,uint64,bytes)"
+    )(vk, payment_bytes, registration_bytes, bytes32_from_hex(link_nonce, "linkNonce"), *terms)
+
+
 def _resolve_registration_timeout(job: dict, peer: str) -> bool:
     """Expire/refund an absent or late registration. Returns true only after mining."""
     state, commitment_hash, deadline = _registration_attempt_state(job)
@@ -2921,15 +3244,7 @@ def _resolve_registration_timeout(job: dict, peer: str) -> bool:
     if already_resolved():
         return mark_expired(str(job.get("registrationTimeoutTx", "") or ""))
 
-    fn = C.storage_registration_timeout.functions.resolveRegistrationTimeout(
-        C.w3.to_checksum_address(vk_address),
-        payment_bytes,
-        registration_bytes,
-        int(quote["priceWei"]),
-        int(quote["quoteValidUntil"]),
-        int(quote["transferDeadline"]),
-        bytes.fromhex(str(quote["vkSignature"]).removeprefix("0x")),
-    )
+    fn = _registration_timeout_call(vk_address, payment_bytes, registration_bytes, quote)
     try:
         with TM.account_transaction_lock(C.DO):
             nonce = TM.pending_nonce(C.w3, C.DO)

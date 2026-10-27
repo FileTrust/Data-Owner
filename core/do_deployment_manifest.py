@@ -181,6 +181,58 @@ def verify_manifest(
                 )
 
 
+_REGISTRY_DEPRECATED = 2
+_REGISTRY_RETIRED = 3
+
+
+def verify_against_registry(
+    addresses: dict,
+    *,
+    chain_id: int,
+    registry_chain_id: int,
+    lookup,
+    entry,
+    latest_version,
+    code_hash,
+) -> dict:
+    """Check the DO's pinned contracts against FileTrustAddressRegistry (Phase 2).
+
+    The registry is checked, never followed: each pinned contract must be registered
+    under its own name, not be Retired, and still run the registered code, on the chain
+    this DO is configured for. Raises DeploymentManifestError otherwise (fail closed).
+    Returns the names with a newer registered version and those marked Deprecated, for
+    the user to update through a verified release; the DO keeps its pinned addresses.
+
+    lookup(address) -> (name, version or 0); entry(name, version) -> mapping with
+    "status" and "codeHash"; latest_version(name) -> int; code_hash(address) -> hex.
+    """
+    if int(registry_chain_id) != int(chain_id):
+        raise DeploymentManifestError(
+            f"address registry describes chain {registry_chain_id}, not the configured chain {chain_id}"
+        )
+    newer: list[str] = []
+    deprecated: list[str] = []
+    for name, address in addresses.items():
+        if not address:
+            continue
+        registered_name, version = lookup(address)
+        if not version:
+            raise DeploymentManifestError(f"{name} {address} is not registered in the address registry")
+        if registered_name != name:
+            raise DeploymentManifestError(f"{name} {address} is registered as {registered_name}")
+        record = entry(name, version)
+        status = int(record["status"])
+        if status >= _REGISTRY_RETIRED:
+            raise DeploymentManifestError(f"{name} version {version} is retired in the address registry")
+        if str(code_hash(address)).lower() != str(record["codeHash"]).lower():
+            raise DeploymentManifestError(f"{name} {address} no longer runs the registered code")
+        if status == _REGISTRY_DEPRECATED:
+            deprecated.append(name)
+        if int(latest_version(name)) > int(version):
+            newer.append(name)
+    return {"newer": sorted(newer), "deprecated": sorted(deprecated)}
+
+
 def enforce_manifest(path: str | None, *, chain_id: int, addresses: dict) -> None:
     """Load and verify the manifest at path. An empty path is a no-op (opt-in); a
     present-but-invalid manifest, or any mismatch, raises."""

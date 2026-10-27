@@ -377,9 +377,18 @@ def save_vk_receipt(receipt: dict, *, commitment_hash: str) -> str:
     return path
 
 
-def submit_storage_dispute(receipt: dict) -> tuple[bool, str]:
+def submit_storage_dispute(receipt: dict, commitment_nonce: str | None = None) -> tuple[bool, str]:
     """Submit a storage receipt dispute on-chain using VK's signed receipt.
+
+    The dispute names the file through the owner's commitment nonce (the argument, or the
+    one saved in the receipt): StorageReceiptDispute judges it only for the file the keeper
+    registered, and a deletion the owner asked for makes it invalid. Without a nonce the
+    contract accepts it only when nothing was ever registered under the receipt's sector.
+    A valid dispute refunds nothing by itself; the escrow is settled separately.
     Returns (ok, reason). Does not raise — caller decides whether to continue."""
+    nonce = str(commitment_nonce or receipt.get("commitmentNonce", "") or "").strip()
+    if nonce:
+        return submit_dispute_with_deletion_check(receipt, nonce)
     if C.storage_receipt_dispute is None:
         return False, "StorageReceiptDispute not configured"
 
@@ -1844,6 +1853,40 @@ def request_file_deletion(vk_peer: str, commitment_hash: str, deletion_auth_secr
         return False, f"deletion error: {exc}"
 
 
+def _abi_input_names(contract, function_name: str) -> list[list[str]]:
+    """Input names of each overload of `function_name` in the ABI loaded for `contract`.
+
+    The app loads every contract with the ABI of its deployed version, so this tells
+    which form of a function is on chain."""
+    abi = getattr(contract, "abi", None)
+    if not isinstance(abi, list):
+        return []
+    return [
+        [str(i.get("name", "")) for i in entry.get("inputs", [])]
+        for entry in abi
+        if isinstance(entry, dict) and entry.get("type") == "function"
+        and entry.get("name") == function_name
+    ]
+
+
+def takes_link_nonce(contract, function_name: str) -> bool:
+    return any("linkNonce" in names for names in _abi_input_names(contract, function_name))
+
+
+def escrow_link_required() -> bool:
+    """True once the deployed refund contracts take the escrow's link nonce.
+
+    Since Phase 1D (D18/D19) the admission dispute and the registration timeout refund
+    an escrow only when its link commitment opens to the quoted registration, with the
+    nonce the keeper gives in its quote. A quote without one must not be paid then:
+    nothing could refund it before its service end and grace are over."""
+    return takes_link_nonce(
+        getattr(C, "storage_registration_timeout", None), "resolveRegistrationTimeout"
+    ) or takes_link_nonce(
+        getattr(C, "storage_receipt_dispute", None), "submitAdmissionFailureDispute"
+    )
+
+
 def submit_admission_failure_dispute(
     vk_address: str,
     payment_commitment: str,
@@ -1852,8 +1895,12 @@ def submit_admission_failure_dispute(
     quote_valid_until: int = 0,
     quote_signature: str = "",
     failure_signature: str = "",
+    link_nonce: str = "",
 ) -> tuple[bool, str]:
-    """Dispute a VK that rejected a store while admission was declared open."""
+    """Dispute a VK that rejected a store while admission was declared open.
+
+    A contract from Phase 1D on also takes the quote's link nonce: it refunds the
+    escrow only when the escrow's link commitment opens to the quoted registration."""
     if C.storage_receipt_dispute is None:
         return False, "StorageReceiptDispute not configured"
     if not payment_commitment:
@@ -1864,6 +1911,9 @@ def submit_admission_failure_dispute(
         return False, "signed quote terms are required"
     if int(quote_valid_until or 0) <= 0 or not quote_signature or not failure_signature:
         return False, "signed quote validity evidence is required"
+    takes_link = takes_link_nonce(C.storage_receipt_dispute, "submitAdmissionFailureDispute")
+    if takes_link and not link_nonce:
+        return False, "the quote's link nonce is required"
 
     try:
         vk_checksum = C.w3.to_checksum_address(vk_address)
@@ -1873,10 +1923,12 @@ def submit_admission_failure_dispute(
             if registration_commitment
             else b"\x00" * 32
         )
+        link_args = [_named_bytes32(link_nonce, "linkNonce")] if takes_link else []
         fn = C.storage_receipt_dispute.functions.submitAdmissionFailureDispute(
             vk_checksum,
             payment_b,
             registration_b,
+            *link_args,
             int(quoted_price_wei),
             int(quote_valid_until),
             bytes.fromhex(quote_signature[2:] if quote_signature.startswith("0x") else quote_signature),
@@ -1895,6 +1947,110 @@ def submit_admission_failure_dispute(
     except Exception as exc:
         L.log(f"[dispute] submitAdmissionFailureDispute failed: {exc}")
         return False, str(exc)
+
+
+# settle_disputed_escrow's reasons start with this when no later attempt can succeed.
+SETTLEMENT_FINAL = "cannot be settled"
+
+
+def storage_dispute_id(receipt: dict) -> bytes:
+    """StorageReceiptDispute's id of a dispute about `receipt`: keccak256(vk, receiptNonce, pieceRoot)."""
+    return bytes(Web3.solidity_keccak(
+        ["address", "bytes32", "bytes32"],
+        [
+            Web3.to_checksum_address(str(receipt.get("vkAddress", ""))),
+            _named_bytes32(receipt.get("receiptNonce", ""), "receiptNonce"),
+            _named_bytes32(receipt.get("pieceRoot", ""), "pieceRoot"),
+        ],
+    ))
+
+
+def settle_disputed_escrow(
+    receipt: dict,
+    payment_commitment: str,
+    registration_commitment: str,
+    link_nonce: str,
+) -> tuple[bool, str]:
+    """Refund the escrow of a valid storage dispute about `receipt`.
+
+    Since Phase 1D a valid dispute applies the penalties and moves no escrow.
+    settleDisputedEscrow refunds the escrow, with the compensation, to its depositor,
+    only when the escrow's link commitment opens, with the quote's link nonce, to the
+    registration of the disputed file. Returns (settled, reason): an escrow already
+    settled counts as settled, and a reason starting with SETTLEMENT_FINAL means no
+    later attempt can succeed. Does not raise."""
+    contract = C.storage_receipt_dispute
+    if contract is None:
+        return False, "StorageReceiptDispute not configured"
+    if not _abi_input_names(contract, "settleDisputedEscrow"):
+        return False, "the deployed StorageReceiptDispute does not settle escrow yet"
+    if not (payment_commitment and registration_commitment and link_nonce):
+        return False, f"{SETTLEMENT_FINAL}: the quote's registration or link nonce is missing"
+    try:
+        dispute_id = storage_dispute_id(receipt)
+        if contract.functions.disputedEscrowSettled(dispute_id).call():
+            return True, "already settled"
+        # DisputeStatus: Pending (no dispute), Valid, Invalid.
+        status = int(contract.functions.disputes(dispute_id).call()[7])
+        if status != 1:
+            return False, f"{SETTLEMENT_FINAL}: the dispute is not valid (status {status})"
+        fn = contract.functions.settleDisputedEscrow(
+            dispute_id,
+            _named_bytes32(payment_commitment, "paymentCommitment"),
+            _named_bytes32(registration_commitment, "registrationCommitment"),
+            _named_bytes32(link_nonce, "linkNonce"),
+        )
+        with TM.account_transaction_lock(C.DO_ACCOUNT.address):
+            tx_receipt = send_signed_tx_receipt(
+                fn, C.DO_ACCOUNT, f"[dispute] settleDisputedEscrow pc={payment_commitment[:18]}..."
+            )
+        if tx_receipt and tx_receipt.status == 1:
+            L.log(
+                f"[dispute] disputed escrow settled  pc={payment_commitment[:18]}...  "
+                f"tx={tx_receipt.transactionHash.hex()}"
+            )
+            return True, tx_receipt.transactionHash.hex()
+        return False, "settlement transaction failed"
+    except Exception as exc:
+        L.log(f"[dispute] settleDisputedEscrow failed: {exc}")
+        return False, f"settlement error: {exc}"
+
+
+def reclaim_escrow(payment_commitment: str, escrow_address: str = "") -> tuple[bool, str]:
+    """Take back an escrow its keeper never claimed, once its service end and grace are over.
+
+    VKEscrow refuses it during the grace, after a claim or a refund, and for a deposit
+    that was never finalized; a dry run finds that out without a transaction.
+    `escrow_address` names the VKEscrow version the escrow was paid into, when it is not
+    the configured one: every version has the same reclaimEscrow (Phase 2).
+    Returns (reclaimed, reason). Does not raise."""
+    if C.vk_escrow is None:
+        return False, "VKEscrow not configured"
+    try:
+        escrow = C.vk_escrow
+        if escrow_address and str(escrow_address).lower() != str(getattr(escrow, "address", "")).lower():
+            escrow = C.w3.eth.contract(address=C.w3.to_checksum_address(escrow_address), abi=escrow.abi)
+        fn = escrow.functions.reclaimEscrow(
+            _named_bytes32(payment_commitment, "paymentCommitment")
+        )
+        try:
+            fn.call({"from": C.DO_ACCOUNT.address})
+        except Exception as exc:
+            return False, f"not reclaimable: {exc}"
+        with TM.account_transaction_lock(C.DO_ACCOUNT.address):
+            tx_receipt = send_signed_tx_receipt(
+                fn, C.DO_ACCOUNT, f"[escrow] reclaimEscrow pc={payment_commitment[:18]}..."
+            )
+        if tx_receipt and tx_receipt.status == 1:
+            L.log(
+                f"[escrow] unclaimed escrow taken back  pc={payment_commitment[:18]}...  "
+                f"tx={tx_receipt.transactionHash.hex()}"
+            )
+            return True, tx_receipt.transactionHash.hex()
+        return False, "reclaim transaction failed"
+    except Exception as exc:
+        L.log(f"[escrow] reclaimEscrow failed: {exc}")
+        return False, f"reclaim error: {exc}"
 
 
 def submit_deletion_failure_dispute(receipt: dict, commitment_nonce: str) -> tuple[bool, str]:
