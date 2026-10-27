@@ -278,6 +278,9 @@ def refresh(base_dir, *, contracts_dir=None, timeout=DEFAULT_TIMEOUT):
     if not (base/'config.json').is_file() or not config_value(base/'config.json','network_config_url',''):
         return [], ''
     result=check(base,base,force=True)
+    if result['state']=='blocked' and result.get('reason'):
+        # For example an older app on a network that needs a newer one: say so.
+        return [], result['reason']
     if result['state'] not in {'available','current'}:
         return [], 'Network settings could not be validated; saved settings retained.'
     try:

@@ -204,8 +204,55 @@ def status(home):
     try: return read(Path(home)/'.network-updates/status.json')
     except (OSError,ValueError): return {'state':'unchecked'}
 
+SEMVER=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)')
+
+def semver(value,what):
+    if not isinstance(value,str) or not SEMVER.fullmatch(value): raise ValueError('Invalid '+what)
+    return tuple(int(part) for part in value.split('.'))
+
+def require_minimum_version(app,payload):
+    """The config service may name the oldest application version its network needs."""
+    minimums=(payload.get('network') or {}).get('minimum_application_versions')
+    name=product(app)
+    if minimums is None or name is None: return
+    if not isinstance(minimums,dict): raise ValueError('Invalid minimum application versions')
+    if name not in minimums: return
+    required=semver(minimums[name],'minimum application version')
+    try: installed=(Path(app)/'VERSION').read_text().strip()
+    except OSError: raise ValueError('Installed application version unknown; the network minimum cannot be confirmed') from None
+    if semver(installed,'installed application version')<required:
+        raise ValueError(f'This network requires FileTrust {name} {minimums[name]} or newer (installed {installed}). '
+                         'Install the application update first; saved settings retained.')
+
+def network_binding(app,chain):
+    """Contracts this release names for a chain (network-bindings.json, signed with the code)."""
+    path=Path(app)/'network-bindings.json'
+    if not path.is_file(): return {}
+    try: data=read(path)
+    except ValueError: raise ValueError('Invalid signed network binding') from None
+    networks=data.get('networks') if isinstance(data,dict) else None
+    if not isinstance(networks,dict) or data.get('schema')!=1: raise ValueError('Invalid signed network binding')
+    entry=networks.get(str(chain),{})
+    contracts=entry.get('contracts',{}) if isinstance(entry,dict) else None
+    if not isinstance(contracts,dict): raise ValueError('Invalid signed network binding')
+    for row in contracts.values():
+        if not isinstance(row,dict) or not address(row.get('address')) or not all(
+                isinstance(row.get(key),str) and re.fullmatch(r'[0-9a-f]{64}',row[key]) for key in ('code_sha256','abi_sha256')):
+            raise ValueError('Invalid signed network binding')
+    return contracts
+
+def matches_binding(row,candidate,payload,name,key):
+    """Proposed address, offered ABI and the code at the proposed RPC are the bound ones."""
+    if str(candidate['fields'][key]).lower()!=row['address'].lower(): return False
+    abi=candidate['abis'][name]['abi'] if name in candidate['abis'] else ((payload.get('artifact_files') or {}).get(name+'.json') or {}).get('abi')
+    if not isinstance(abi,list) or digest(abi)!=row['abi_sha256']: return False
+    code=rpc(candidate['fields']['rpc_url'],'eth_getCode',[candidate['fields'][key],'latest'])
+    if not isinstance(code,str) or not re.fullmatch(r'0x(?:[0-9a-fA-F]{2})+',code): return False
+    return hashlib.sha256(bytes.fromhex(code[2:])).hexdigest()==row['code_sha256']
+
 def policy(app,home,cfg,candidate,payload,initial=False):
     """Public proof packages supply their existing signed binding validator."""
+    require_minimum_version(app,payload)
     if product(app) in {'do','req','g','guardians'}:
         advertised=(payload.get('deployed_addresses') or {}).get('capabilities',{}).get('dkgAttemptProtocol',0)
         selected=candidate['fields'].get('dkg_attempt_protocol',cfg.get('dkg_attempt_protocol',0)) if initial else cfg.get('dkg_attempt_protocol',0)
@@ -222,15 +269,25 @@ def policy(app,home,cfg,candidate,payload,initial=False):
         module.validate(Path(app),Path(home),cfg,candidate,payload)
     elif not initial:
         if any(key.startswith('protocol:') for key in candidate['changes']): raise ValueError('Protocol settings require a compatible application/artifact release')
-        # Internal/factory nodes have no signed package binding. A changed
-        # runtime or ABI requires an application compatibility review first.
+        # A changed runtime or ABI requires an application compatibility review
+        # first, unless this release's signed binding names that deployment.
+        binding=None;bound=False
         for prefix,name in CONTRACTS.items():
             key=prefix+'_address'
-            if key not in candidate['fields']: continue
+            if key not in candidate['fields'] or ('ABI:'+name not in candidate['changes'] and key not in candidate['changes']): continue
+            if binding is None: binding=network_binding(app,candidate['chain_id'])
+            if name in binding:
+                if not matches_binding(binding[name],candidate,payload,name,key): raise ValueError('Contract differs from the signed network binding: '+name)
+                bound=True;continue
             if 'ABI:'+name in candidate['changes']: raise ValueError('ABI compatibility requires an application update: '+name)
-            if key in candidate['changes']:
-                old=rpc(cfg['rpc_url'],'eth_getCode',[cfg[key],'latest']);new=rpc(candidate['fields']['rpc_url'],'eth_getCode',[candidate['fields'][key],'latest'])
-                if old in ('0x','0x0','') or old.lower()!=new.lower(): raise ValueError('Contract compatibility requires an application update: '+name)
+            old=rpc(cfg['rpc_url'],'eth_getCode',[cfg[key],'latest']);new=rpc(candidate['fields']['rpc_url'],'eth_getCode',[candidate['fields'][key],'latest'])
+            if old in ('0x','0x0','') or old.lower()!=new.lower(): raise ValueError('Contract compatibility requires an application update: '+name)
+        if bound:
+            # A binding describes one deployment: never a mix of it and older contracts.
+            for prefix,name in CONTRACTS.items():
+                key=prefix+'_address'
+                if name in binding and key in candidate['fields'] and not matches_binding(binding[name],candidate,payload,name,key):
+                    raise ValueError('The signed network binding covers one deployment; '+name+' does not match it')
 
 def check(app,home=None,force=False,initial=False):
     app=Path(app);home=Path(home or app);directory=home/'.network-updates';directory.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -258,7 +315,8 @@ def notify(app,home=None,log=print):
         marker=(result.get('state'),result.get('content_sha256'))
         if marker!=(previous.get('state'),previous.get('content_sha256')):
             if result['state'] in {'available','blocked'}:
-                log('Network settings changed: '+', '.join(result['changes'])+'. '+('Requires a compatible application/artifact release; saved settings retained.' if result['state']=='blocked' else 'Review with network-config.py status; applying is manual.'))
+                changed='Network settings changed: '+', '.join(result['changes'])+'. ' if result['changes'] else 'Network settings: '
+                log(changed+((result.get('reason') or 'Requires a compatible application/artifact release; saved settings retained.') if result['state']=='blocked' else 'Review with network-config.py status; applying is manual.'))
             elif result['state']=='unavailable': log(result['message'])
         return result
     except Exception: return {'state':'unavailable'}
