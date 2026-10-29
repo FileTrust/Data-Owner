@@ -95,7 +95,7 @@ class ResilientHTTPProvider(HTTPProvider):
         self._backoff_max = max(self._backoff_initial, float(backoff_max_seconds))
 
     @staticmethod
-    def _usable_response(response: Any) -> bool:
+    def _usable_response(response: Any, method: str = "") -> bool:
         if not isinstance(response, dict):
             return False
         if _chain_not_yet_visible(response):
@@ -103,6 +103,10 @@ class ResilientHTTPProvider(HTTPProvider):
             # "still indexing" reply as a final result.
             return False
         if response.get("error") is not None:
+            return True
+        if method in {"eth_getTransactionReceipt", "eth_getTransactionByHash"} and "result" in response:
+            # JSON-RPC null is a valid "not found" answer. Web3 must receive
+            # it so durable senders can reconcile/broadcast their saved bytes.
             return True
         return "result" in response and response.get("result") is not None
 
@@ -114,7 +118,7 @@ class ResilientHTTPProvider(HTTPProvider):
         for attempt in range(self._attempts):
             try:
                 response = super().make_request(method, params)
-                if self._usable_response(response):
+                if self._usable_response(response, str(method)):
                     return response
                 last_error = ConnectionError(
                     f"JSON-RPC {method} returned no usable result"

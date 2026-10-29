@@ -342,8 +342,8 @@
     },
     "core/do_rpc.py": {
       "mode": 420,
-      "sha256": "4093c0f12c27112cec44540cc5303b0441750138045b30acff31891d8e4a4403",
-      "size": 5034
+      "sha256": "e704608974c5839dc7cd08f7a1901ec83d7cce75088c1075f89e99aaa59abd54",
+      "size": 5350
     },
     "core/do_sealed_copy.py": {
       "mode": 420,
