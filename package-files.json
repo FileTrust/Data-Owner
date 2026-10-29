@@ -392,8 +392,8 @@
     },
     "core/do_vaultmesh.py": {
       "mode": 420,
-      "sha256": "e7bf7ee2bce06998d460f94fa1755a3071d34994d1cde686e1ca4a6a03bb7da1",
-      "size": 177954
+      "sha256": "dec16115e943cb19e97c77a20e34ec88f474eda93baafef821291941b48ae547",
+      "size": 178218
     },
     "core/ft_desktop_lifecycle.py": {
       "mode": 420,

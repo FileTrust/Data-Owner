@@ -3092,13 +3092,17 @@ def _deposit_escrow_from_quote_info(item: dict, quote_info: dict) -> str:
                 tx_builder = C.vk_escrow.functions.depositEscrowBondV2
             else:
                 tx_builder = C.vk_escrow.functions.depositEscrowV2
-            tx = tx_builder(
+            fn = tx_builder(
                 pc_bytes, sc_bytes, lc_bytes, service_end, transfer_deadline
-            ).build_transaction({
+            )
+            # Current escrow records can exceed the former fixed 200k limit.
+            # Match batch deposits: estimate the exact call before signing.
+            gas_est = fn.estimate_gas({"from": C.DO, "value": deposit_value_wei})
+            tx = fn.build_transaction({
                 "from": C.DO,
                 "value": deposit_value_wei,
                 "nonce": nonce,
-                "gas": 200_000,
+                "gas": gas_est + 80_000,
                 "gasPrice": gas_price,
             })
             signed = C.DO_ACCOUNT.sign_transaction(tx)
