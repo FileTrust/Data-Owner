@@ -936,8 +936,11 @@ def add_selected_guardians_to_policy():
         row = by_addr.get(addr.lower())
         if row is None or addr.lower() in incompatible_set:
             continue
+        previous_stake = int(row.get("stake", 0) or 0)
         ok, reason = N._verify_guardian_before_use(row)
         if not ok:
+            if previous_stake != int(row.get("stake", 0) or 0):
+                N._render_guardian_records(S.guardian_display_records)
             refused.append((addr, reason))
     if refused:
         lines = "\n".join(f"  {a[:20]}… — {r}" for a, r in refused)

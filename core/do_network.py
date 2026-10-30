@@ -866,8 +866,20 @@ def select_best_guardians(count: int = 5, threshold: int = 3, service_days: int 
     # window did at start-up -- and the checks are independent, so the order
     # of the answers cannot change which guardians are chosen: the ranked list
     # is still walked in order below.
-    ranked = sorted(candidates, key=_score, reverse=True)
-    verdicts = _verify_guardians_in_parallel(ranked, count)
+    # A bond reservation can lower stake after the directory snapshot. A
+    # refreshed row must be ranked again before it may influence selection.
+    for selection_pass in range(2):
+        ranked = sorted(candidates, key=_score, reverse=True)
+        stakes = {id(row): int(row.get("stake", 0) or 0) for row in ranked}
+        verdicts = _verify_guardians_in_parallel(ranked, count)
+        refreshed = any(
+            not verdicts.get(id(row), (True, ""))[0]
+            and verdicts.get(id(row), (True, ""))[1].startswith("stake overstated")
+            and stakes[id(row)] != int(row.get("stake", 0) or 0)
+            for row in ranked
+        )
+        if not refreshed or selection_pass:
+            break
     chosen_rows = []
     refused: list[str] = []
     for row in ranked:
@@ -2736,6 +2748,20 @@ def _verify_guardian_before_use(
     if not chain["duration_suitable"]:
         return False, f"not available for the service days (max {chain['max_service_days']} on chain)"
     mismatch = _guardian_listing_mismatch(row, chain)
+    if mismatch.startswith("stake overstated"):
+        # A stale stake is repairable only when ALL other directory checks
+        # pass. The caller must repeat selection using this authoritative row.
+        other = _guardian_listing_mismatch({**row, "stake": chain["stake"]}, chain)
+        if other:
+            return False, other
+        try:
+            minimum = int(C.guardian_registry.functions.minStake().call())
+        except Exception as exc:
+            return False, f"chain check failed: {exc}"
+        if minimum <= 0 or int(chain["stake"]) < minimum:
+            return False, "insufficient on-chain stake"
+        row.update(chain)
+        return False, mismatch + "; current chain row refreshed; repeat selection"
     if mismatch:
         return False, mismatch
     row.update(chain)
