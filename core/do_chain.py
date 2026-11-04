@@ -1566,9 +1566,15 @@ def recent_deletion_confirmation_events() -> set[str]:
         lookback = max(1, int(getattr(
             C.config, "DO_DELETION_EVENT_LOOKBACK_BLOCKS", 10_000
         )))
-        rows = C.file_registration_sc.events.FileDeletionConfirmed().get_logs(
-            from_block=max(0, latest - lookback), to_block=latest
-        )
+        # Retain the full configured lookback, but page below the public RPC
+        # range cap. Raising the gateway limit is not required for discovery.
+        event = C.file_registration_sc.events.FileDeletionConfirmed()
+        rows = []
+        start = max(0, latest - lookback)
+        while start <= latest:
+            stop = min(latest, start + 9_000 - 1)
+            rows.extend(event.get_logs(from_block=start, to_block=stop))
+            start = stop + 1
         return {
             HX.prefixed_hex(
                 row["args"]["commitmentHash"], expected_bytes=32,

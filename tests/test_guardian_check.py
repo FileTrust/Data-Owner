@@ -13,6 +13,7 @@ import os
 import sys
 import types
 from pathlib import Path
+import pytest
 
 DO_ROOT = Path(__file__).resolve().parents[1]
 if str(DO_ROOT) not in sys.path:
@@ -152,14 +153,22 @@ def test_bond_reduced_stake_refreshes_but_requires_a_second_selection(monkeypatc
     assert N._verify_guardian_before_use(row)==(True,'ok')
 
 
-def test_stake_refresh_never_hides_penalties_or_insufficient_stake(monkeypatch):
-    for kwargs,reason in [({'stake':10**18,'penalties':1},'total_proof_penalties'),
-                          ({'stake':10**18-1},'insufficient on-chain stake')]:
-        install(monkeypatch,**kwargs)
-        row=listed(stake=1008000000000000000)
-        ok,message=N._verify_guardian_before_use(row)
-        assert not ok and reason in message
-        assert row['stake']==1008000000000000000
+def test_stake_refresh_retains_penalties_and_refuses_the_old_choice(monkeypatch):
+    install(monkeypatch, stake=10**18, penalties=1)
+    row = listed(stake=1008000000000000000)
+    ok, message = N._verify_guardian_before_use(row)
+    assert not ok and N.guardian_record_was_refreshed(message)
+    assert row['stake'] == 10**18
+    assert row['total_proof_penalties'] == 1
+
+
+def test_insufficient_stake_is_never_refreshed_into_acceptance(monkeypatch):
+    install(monkeypatch, stake=10**18-1)
+    for stake in (1008000000000000000, 10**18-1):
+        row = listed(stake=stake)
+        ok, message = N._verify_guardian_before_use(row)
+        assert not ok and message == 'insufficient on-chain stake'
+        assert row['stake'] == stake
 
 
 def test_stake_refresh_requires_a_successful_minimum_read(monkeypatch):
@@ -168,3 +177,75 @@ def test_stake_refresh_requires_a_successful_minimum_read(monkeypatch):
     row=listed(stake=1008000000000000000)
     assert N._verify_guardian_before_use(row)[0] is False
     assert row['stake']==1008000000000000000
+
+
+@pytest.mark.parametrize('field,chain_kw,value', [
+    ('failed', 'failed', 1), ('dkg_complaints', 'complaints', 2),
+    ('total_proof_penalties', 'penalties', 3), ('pre_bad_partial', 'pre_bad', 4),
+    ('reputation', 'reputation', 3000),
+])
+def test_changed_history_requires_reselection_and_retains_chain_facts(monkeypatch, field, chain_kw, value):
+    install(monkeypatch, **{chain_kw: value})
+    row = listed()
+    ok, reason = N._verify_guardian_before_use(row)
+    assert not ok and N.guardian_record_was_refreshed(reason)
+    assert row[field] == value
+    assert N._verify_guardian_before_use(row) == (True, 'ok')
+
+
+def test_changed_prices_are_shown_before_the_next_selection(monkeypatch):
+    install(monkeypatch, prices=(11, 22, 33, 44))
+    row = listed()
+    ok, reason = N._verify_guardian_before_use(row)
+    assert not ok and N.guardian_record_was_refreshed(reason)
+    assert row['dkg_material_su'] == 11
+    assert row['daily_share_custody_su'] == 44
+
+
+def test_manual_selection_shows_updated_failures_and_does_not_stage_them(monkeypatch):
+    from core import do_actions as actions
+    from unittest.mock import Mock
+    install(monkeypatch, failed=1)
+    row = listed()
+    monkeypatch.setattr(N.S, 'guardian_display_records', [row])
+    monkeypatch.setattr(N.S, 'staged_guardians', [ADDRESS])
+    monkeypatch.setattr(N, 'get_selected_guardians', lambda: [ADDRESS])
+    render, warning = Mock(), Mock()
+    monkeypatch.setattr(N, '_render_guardian_records', render)
+    monkeypatch.setattr(actions.L, 'show_warning', warning)
+    monkeypatch.setattr(actions.L, 'log', lambda *a: None)
+    actions.add_selected_guardians_to_policy()
+    assert row['failed'] == 1
+    assert N.S.staged_guardians == []
+    render.assert_called_once()
+    warning.assert_called_once()
+
+
+def test_watched_folder_retries_the_same_file_after_selection_wait(monkeypatch, tmp_path):
+    from core import do_actions as actions
+    source = tmp_path / 'original.bin'
+    source.write_bytes(b'original contents')
+    key, snapshot, now = str(source), [17, 1], [100.0]
+    monkeypatch.setattr(actions, 'time', types.SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(actions.C, 'config', types.SimpleNamespace(DROP_FOLDER_STABLE_SECONDS=5))
+    monkeypatch.setattr(actions, '_drop_folder_path', lambda: tmp_path)
+    monkeypatch.setattr(actions, '_skip_drop_child', lambda p: False)
+    monkeypatch.setattr(actions, '_path_upload_snapshot', lambda p: snapshot)
+    monkeypatch.setattr(actions, '_path_file_inventory', lambda p: {})
+    monkeypatch.setattr(actions, '_find_matching_drop_upload_record_for_live_item', lambda *a: False)
+    for attr, value in dict(drop_folder_current_item=key, drop_folder_seen={key: snapshot},
+                            drop_folder_pending={}, drop_folder_inventory={}, drop_folder_queue=[],
+                            drop_folder_status_var=None).items():
+        monkeypatch.setattr(actions.S, attr, value)
+    monkeypatch.setattr(actions.L, 'log', lambda *a: None)
+    monkeypatch.setattr(actions.L, 'set_status', lambda *a: None)
+    actions._guardian_selection_waiting(N.GuardianSelectionPending('records changed'))
+    assert key not in actions.S.drop_folder_seen
+    monkeypatch.setattr(actions.S, 'drop_folder_current_item', '')
+    actions._scan_drop_folder_once()
+    assert actions.S.drop_folder_queue == []
+    now[0] = 136.0
+    actions._scan_drop_folder_once()
+    actions._scan_drop_folder_once()
+    assert actions.S.drop_folder_queue == [key]
+    assert source.read_bytes() == b'original contents'

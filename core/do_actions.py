@@ -728,6 +728,24 @@ def _resume_auto_upload_after_key() -> None:
     threading.Thread(target=run_all, daemon=True).start()
 
 
+def _guardian_selection_waiting(exc: Exception) -> None:
+    S.auto_quiet_info = False
+    L.log(f"[auto] waiting for Guardian selection: {exc}")
+    L.set_status(f"Waiting for eligible Guardians: {exc}", "waiting")
+    if S.drop_folder_current_item:
+        # Queueing marks an item seen before it is uploaded. A temporary
+        # selection wait must not make the watcher silently forget this file.
+        # The normal scanner still checks successful-upload records before
+        # queueing it again, and pausing the watcher still pauses retries.
+        path = Path(S.drop_folder_current_item).resolve()
+        key = str(path)
+        S.drop_folder_seen.pop(key, None)
+        S.drop_folder_pending[key] = {
+            "snapshot": _path_upload_snapshot(path),
+            "stable_since": time.monotonic() + 30.0,
+        }
+
+
 def _auto_prepare_for_upload(file_id: bytes, file_id_hex: str, policy_name: str) -> bool:
     """Return True when upload can continue, False when auto flow is waiting."""
     S.auto_quiet_info = True
@@ -772,6 +790,9 @@ def _auto_prepare_for_upload(file_id: bytes, file_id_hex: str, policy_name: str)
             try:
                 guardians = N.select_best_guardians(count=guardian_n, threshold=guardian_t, service_days=service_days)
                 threshold = guardian_t
+            except N.GuardianSelectionPending as exc:
+                _guardian_selection_waiting(exc)
+                return False
             except Exception as exc:
                 S.auto_quiet_info = False
                 L.show_error("Auto Guardian selection error", str(exc))
@@ -794,6 +815,9 @@ def _auto_prepare_for_upload(file_id: bytes, file_id_hex: str, policy_name: str)
     else:
         try:
             guardians = N.select_best_guardians(count=guardian_n, threshold=guardian_t, service_days=service_days)
+        except N.GuardianSelectionPending as exc:
+            _guardian_selection_waiting(exc)
+            return False
         except Exception as exc:
             S.auto_quiet_info = False
             L.show_error("Auto Guardian selection error", str(exc))
@@ -936,10 +960,9 @@ def add_selected_guardians_to_policy():
         row = by_addr.get(addr.lower())
         if row is None or addr.lower() in incompatible_set:
             continue
-        previous_stake = int(row.get("stake", 0) or 0)
         ok, reason = N._verify_guardian_before_use(row)
         if not ok:
-            if previous_stake != int(row.get("stake", 0) or 0):
+            if N.guardian_record_was_refreshed(reason):
                 N._render_guardian_records(S.guardian_display_records)
             refused.append((addr, reason))
     if refused:
@@ -950,6 +973,9 @@ def add_selected_guardians_to_policy():
         )
         L.log(f"Guardian check refused {len(refused)}: " + "; ".join(f"{a[:14]} ({r})" for a, r in refused))
     refused_set = {a.lower() for a, _r in refused}
+    S.staged_guardians = [
+        addr for addr in S.staged_guardians if addr.lower() not in refused_set
+    ]
 
     for addr in selected:
         if addr.lower() in refused_set:

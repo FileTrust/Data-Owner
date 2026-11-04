@@ -20,6 +20,14 @@ from . import do_records as R
 from . import do_directory as D
 
 
+class GuardianSelectionPending(RuntimeError):
+    """No complete, chain-verified Guardian selection is available yet."""
+
+
+def guardian_record_was_refreshed(reason: str) -> bool:
+    return reason.endswith("current chain row refreshed; repeat selection")
+
+
 # ── VK sort constants ─────────────────────────────────────────────────────────
 _VK_NUMERIC_COLS = {"rep", "stake", "done", "fail", "fee", "max_days", "max_piece", "served"}
 _VK_COL_HEADINGS = {
@@ -812,6 +820,8 @@ def select_best_guardians(count: int = 5, threshold: int = 3, service_days: int 
     # From the network directory: usually a 304 from discovery, never a chain
     # read per guardian.
     load_guardians()
+    clear_guardian_selection()
+    S.staged_guardians = []
 
     min_stake = _min_guardian_stake_wei()
     candidates = []
@@ -827,12 +837,9 @@ def select_best_guardians(count: int = 5, threshold: int = 3, service_days: int 
         candidates.append(row)
 
     if len(candidates) < count:
-        raise RuntimeError(
+        raise GuardianSelectionPending(
             f"Auto-select needs {count} Guardians eligible for {service_days} days; found {len(candidates)}."
         )
-
-    min_cost = min(int(r.get("total_su", 0) or 0) for r in candidates)
-    max_cost = max(int(r.get("total_su", 0) or 0) for r in candidates)
 
     def _score(row: dict) -> tuple:
         rep = int(row.get("reputation", 0) or 0) / 10000.0
@@ -866,16 +873,16 @@ def select_best_guardians(count: int = 5, threshold: int = 3, service_days: int 
     # window did at start-up -- and the checks are independent, so the order
     # of the answers cannot change which guardians are chosen: the ranked list
     # is still walked in order below.
-    # A bond reservation can lower stake after the directory snapshot. A
-    # refreshed row must be ranked again before it may influence selection.
+    # A refreshed record must be ranked again, including its current failures,
+    # prices and reputation. Never accept a selection made on an outdated row.
     for selection_pass in range(2):
+        min_cost = min(int(r.get("total_su", 0) or 0) for r in candidates)
+        max_cost = max(int(r.get("total_su", 0) or 0) for r in candidates)
         ranked = sorted(candidates, key=_score, reverse=True)
-        stakes = {id(row): int(row.get("stake", 0) or 0) for row in ranked}
         verdicts = _verify_guardians_in_parallel(ranked, count)
         refreshed = any(
             not verdicts.get(id(row), (True, ""))[0]
-            and verdicts.get(id(row), (True, ""))[1].startswith("stake overstated")
-            and stakes[id(row)] != int(row.get("stake", 0) or 0)
+            and guardian_record_was_refreshed(verdicts.get(id(row), (True, ""))[1])
             for row in ranked
         )
         if not refreshed or selection_pass:
@@ -893,7 +900,7 @@ def select_best_guardians(count: int = 5, threshold: int = 3, service_days: int 
     if refused:
         L.log(f"[auto] skipped {len(refused)} Guardian(s) the chain disagreed about: {', '.join(refused[:5])}")
     if len(chosen_rows) < count:
-        raise RuntimeError(
+        raise GuardianSelectionPending(
             f"Only {len(chosen_rows)} of {count} Guardians passed an on-chain check at selection time"
             + (f"; skipped: {', '.join(refused[:5])}" if refused else "")
         )
@@ -2667,8 +2674,8 @@ def _guardian_entry_from_chain(checksum: str) -> dict:
 
 # Fields the directory row is compared on. A listed value better for the
 # guardian than the chain's beyond the reputation drift means the directory was
-# stale or dishonest, and the guardian is refused rather than corrected: it was
-# chosen on figures that were not true.
+# stale or dishonest. Refuse the old choice and require selection again using
+# the complete chain row; never erase history to make a listing appear valid.
 def _guardian_listing_mismatch(listed: dict, chain: dict) -> str:
     if _reputation_overstated(int(listed.get("reputation", 0) or 0), int(chain["reputation"])):
         return f"reputation overstated ({listed.get('reputation')} listed, {chain['reputation']} on chain)"
@@ -2694,7 +2701,7 @@ def _verify_guardians_in_parallel(ranked: list[dict], count: int) -> dict:
     into the row it was given.
     """
     wanted = ranked[: max(0, int(count)) + 4]
-    if len(wanted) < 2:
+    if not wanted:
         return {}
     from concurrent.futures import ThreadPoolExecutor
 
@@ -2708,6 +2715,9 @@ def _verify_guardians_in_parallel(ranked: list[dict], count: int) -> dict:
             return id(row), _verify_guardian_before_use(row, service_days=service_days)
         except Exception as exc:  # unable to confirm is not confirmation
             return id(row), (False, f"chain check failed: {exc}")
+
+    if len(wanted) == 1:
+        return dict([check(wanted[0])])
 
     # Sized so the wall time stays about the same as the network grows: these
     # are short chain reads, and the limit that matters is how long the window
@@ -2747,24 +2757,21 @@ def _verify_guardian_before_use(
         return False, f"chain check failed: {exc}"
     if not chain["duration_suitable"]:
         return False, f"not available for the service days (max {chain['max_service_days']} on chain)"
+    # Check eligibility even when discovery and the chain agree on the stake.
+    # A stale/dishonest listing is never permission to bypass this minimum.
+    try:
+        minimum = int(C.guardian_registry.functions.minStake().call())
+    except Exception as exc:
+        return False, f"chain check failed: {exc}"
+    if minimum <= 0 or int(chain["stake"]) < minimum:
+        return False, "insufficient on-chain stake"
     mismatch = _guardian_listing_mismatch(row, chain)
-    if mismatch.startswith("stake overstated"):
-        # A stale stake is repairable only when ALL other directory checks
-        # pass. The caller must repeat selection using this authoritative row.
-        other = _guardian_listing_mismatch({**row, "stake": chain["stake"]}, chain)
-        if other:
-            return False, other
-        try:
-            minimum = int(C.guardian_registry.functions.minStake().call())
-        except Exception as exc:
-            return False, f"chain check failed: {exc}"
-        if minimum <= 0 or int(chain["stake"]) < minimum:
-            return False, "insufficient on-chain stake"
-        row.update(chain)
-        return False, mismatch + "; current chain row refreshed; repeat selection"
-    if mismatch:
-        return False, mismatch
     row.update(chain)
+    if mismatch:
+        # Replace the ENTIRE row with chain facts, retaining all penalties.
+        # Refuse this choice; automatic callers must rerank/reselect, and
+        # manual callers must show the changes and require another selection.
+        return False, mismatch + "; current chain row refreshed; repeat selection"
     return True, "ok"
 
 

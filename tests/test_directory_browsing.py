@@ -380,3 +380,36 @@ def test_auto_selection_reranks_after_a_stake_snapshot_changes(monkeypatch,tmp_p
     monkeypatch.setattr(N,'_verify_guardian_before_use',verify)
     assert N.select_best_guardians(count=1,threshold=1,service_days=30)==[g(2)[0]]
     assert checks.count(g(1)[0])==2
+
+
+def test_auto_selection_reranks_with_actual_failure_history(monkeypatch, tmp_path):
+    install_rows(monkeypatch, tmp_path, [], [
+        g(1, stake=3*10**18, reputation=7000), g(2, stake=2*10**18, reputation=7000)])
+    monkeypatch.setattr(N.S, 'guardians_listbox', None)
+    monkeypatch.setattr(N, 'set_auto_defaults', lambda **kw: None)
+    changed = []
+    def verify(row, service_days=None):
+        if row['address'] == g(1)[0] and row['failed'] == 0:
+            row['failed'] = 10
+            changed.append(row)
+            return False, 'failed understated; current chain row refreshed; repeat selection'
+        return True, 'ok'
+    monkeypatch.setattr(N, '_verify_guardian_before_use', verify)
+    assert N.select_best_guardians(count=1, threshold=1) == [g(2)[0]]
+    assert changed[0]['failed'] == 10
+
+
+def test_one_candidate_can_be_refreshed_and_rechecked(monkeypatch, tmp_path):
+    install_rows(monkeypatch, tmp_path, [], [g(1)])
+    monkeypatch.setattr(N.S, 'guardians_listbox', None)
+    monkeypatch.setattr(N, 'set_auto_defaults', lambda **kw: None)
+    checks = []
+    def verify(row, service_days=None):
+        checks.append(True)
+        if len(checks) == 1:
+            row['failed'] = 1
+            return False, 'failed understated; current chain row refreshed; repeat selection'
+        return True, 'ok'
+    monkeypatch.setattr(N, '_verify_guardian_before_use', verify)
+    assert N.select_best_guardians(count=1, threshold=1) == [g(1)[0]]
+    assert len(checks) == 2
