@@ -79,6 +79,8 @@ class RecoveryJournal:
             for statement in schema.split(';'):
                 if statement.strip():
                     db.execute(statement)
+            db.execute('CREATE INDEX IF NOT EXISTS recovery_operation_status ON operations(status)')
+            db.execute('CREATE INDEX IF NOT EXISTS recovery_attempt_outcome ON attempts(outcome)')
             # Additive journal migration: existing limits, reservations and
             # signed bytes remain authoritative when this component upgrades.
             columns = {row['name'] for row in db.execute('PRAGMA table_info(operations)')}
@@ -338,3 +340,32 @@ class RecoveryJournal:
     def operations(self):
         with self._transaction() as db:
             return [dict(row) for row in db.execute('SELECT id,status,binding,intent,message FROM operations ORDER BY rowid')]
+
+    def unfinished_operations(self, *, after_rowid=0, limit=32):
+        """Page active approvals without loading historical transactions or raw envelopes."""
+        _integer(after_rowid, 'operation cursor')
+        _integer(limit, 'operation page size', 1)
+        if limit > 64:
+            raise ValueError('Recovery operation page size exceeds 64')
+        with self._transaction() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT rowid AS cursor,id,status,binding,message FROM operations "
+                "WHERE rowid>? AND status IN ('running','needs_action') ORDER BY rowid LIMIT ?",
+                (after_rowid, limit))]
+
+    def has_open_attempts(self, *, chain_id, coordinator, owner, skip_file_id=''):
+        """Conservative local admission guard across every unfinished attempt.
+
+        A chain closure is not sufficient until its journal is reconciled.
+        This does not infer that a signed transaction failed or free a nonce.
+        """
+        coordinator, owner = _hex(coordinator, 20), _hex(owner, 20)
+        with self._transaction() as db:
+            for row in db.execute("SELECT o.binding FROM attempts a JOIN operations o "
+                                  "ON a.operation=o.id WHERE a.outcome='pending'"):
+                b = json.loads(row['binding'])
+                if (b['chain_id'] == chain_id and b['coordinator'] == coordinator and
+                        b['owner'] == owner and
+                        b['file_id'].removeprefix('0x') != skip_file_id.removeprefix('0x')):
+                    return True
+        return False

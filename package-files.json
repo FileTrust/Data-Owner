@@ -247,8 +247,8 @@
     },
     "core/do_dkg_journal.py": {
       "mode": 420,
-      "sha256": "46f23935574d2abd095be4ede90cee5b87b9fc47722183dbcd1323186c9cc141",
-      "size": 20744
+      "sha256": "9afd62b4c4afee21d7ec87e8e31f35a9e72cf44264b4a4fceee1f815f3c431f7",
+      "size": 22548
     },
     "core/do_dkg_paths.py": {
       "mode": 420,
@@ -257,8 +257,8 @@
     },
     "core/do_dkg_recovery.py": {
       "mode": 420,
-      "sha256": "ab6528b1f360041e2587f4af871205f3723aedbaeb42017f2533e39c93797196",
-      "size": 26443
+      "sha256": "3c3538f86118d2d7258aee3780c264345b63bb921ccad2fb2dba0d83a2aeff63",
+      "size": 29090
     },
     "core/do_dkg_selection.py": {
       "mode": 420,

@@ -350,6 +350,47 @@ class RecoveryController:
         return RecoveryProgress('shares', 'Confirmed Guardian shares', attempt['number'],
                                 int(receivers).bit_count(), op['intent']['n'])
 
+    def reconcile_existing(self):
+        """Finish existing accepted work without planning/funding another attempt.
+
+        Used when an upload lost its foreground tracker. Original budgets,
+        signed reservations, chain evidence and owner pauses remain enforced.
+        """
+        with account_transaction_lock(self.sender.account.address, allow_recovery=True):
+            op = self.journal.snapshot(self.operation)
+            scope = op['binding']
+            if (scope['owner'] != self.sender.account.address.lower() or
+                    scope['chain_id'] != int(self.w3.eth.chain_id) or
+                    scope['coordinator'] != self.c.coordinator.address.lower()):
+                raise RecoveryNeedsAction('Existing recovery belongs to another wallet or deployment')
+            try:
+                self.sender.recover(signed_only=True)
+            except RecoveryTransactionPending:
+                return RecoveryProgress('confirmation', 'Saved transaction confirmation is uncertain')
+            if op['status'] != 'running':
+                return RecoveryProgress(op['status'], op.get('message') or 'Owner action required')
+            attempt = op['attempts'][-1] if op['attempts'] else None
+            if not attempt or attempt['outcome'] != 'pending' or not attempt['material']:
+                self.journal.set_status(self.operation, 'needs_action',
+                    'Resume the original upload before authorizing another recovery attempt')
+                return RecoveryProgress('needs_action', 'Original upload review required')
+            plan = json.loads(attempt['intent'])
+            bound = self.c.attempt(attempt['material'])
+            if not bound:
+                raise RecoveryNeedsAction('Existing funded attempt is not visible on this deployment')
+            job, chain = bound
+            file_id = bytes.fromhex(scope['file_id'][2:])
+            if (bytes(job.fileId) != file_id or job.epoch != plan['epoch'] or
+                    job.version != plan['version'] or chain.dataOwner.lower() != scope['owner']):
+                raise RecoveryNeedsAction('Existing attempt differs from its approved file or owner')
+            progress = self._running(op, attempt, plan, job, chain,
+                self.w3.eth.get_block('latest')['timestamp'], file_id)
+            if progress.phase == 'retry':
+                self.journal.set_status(self.operation, 'needs_action',
+                    'Previous attempt settled; review the original upload before retrying')
+                return RecoveryProgress('settled', 'Previous funded attempt settled', attempt['number'])
+            return progress
+
     def step(self):
         with account_transaction_lock(self.sender.account.address, allow_recovery=True):
             try:
