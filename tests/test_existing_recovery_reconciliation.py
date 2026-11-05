@@ -65,6 +65,30 @@ def test_expired_accepted_work_uses_existing_expiry_procedure(existing):
     existing.candidates.assert_not_called()
 
 
+def test_original_upload_keeps_approved_retry_after_settlement_without_funding_it(existing):
+    before=existing.journal.snapshot('original')
+    existing.chain.state=5
+    assert existing.worker.reconcile_existing(allow_retry=True).phase=='retry'
+    after=existing.journal.snapshot('original')
+    assert after['status']=='running' and after['attempts'][0]['outcome']=='failed'
+    assert len(after['attempts'])==1
+    assert (after['max_attempts'],after['max_debit'])==(before['max_attempts'],before['max_debit'])
+    existing.candidates.assert_not_called();existing.sender.submit.assert_not_called()
+
+
+def test_retry_option_never_overrides_owner_pause(existing):
+    existing.journal.set_status('original','needs_action','Owner paused it')
+    assert existing.worker.reconcile_existing(allow_retry=True).phase=='needs_action'
+    existing.sender.submit.assert_not_called();existing.candidates.assert_not_called()
+
+
+def test_cancelled_operation_still_requires_review_with_retry_option(existing):
+    existing.chain.state=5
+    existing.c.registry.functions.acceptanceTimedOut.return_value.call.return_value=False
+    with pytest.raises(RecoveryNeedsAction):existing.worker.reconcile_existing(allow_retry=True)
+    existing.sender.submit.assert_not_called()
+
+
 def test_unresolved_dispute_prevents_premature_work_expiry(existing):
     existing.chain.state=2
     existing.c.manager.functions.pendingDisputes.return_value.call.return_value=1

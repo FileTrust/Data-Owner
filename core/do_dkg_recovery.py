@@ -350,7 +350,7 @@ class RecoveryController:
         return RecoveryProgress('shares', 'Confirmed Guardian shares', attempt['number'],
                                 int(receivers).bit_count(), op['intent']['n'])
 
-    def reconcile_existing(self):
+    def reconcile_existing(self, *, allow_retry=False):
         """Finish existing accepted work without planning/funding another attempt.
 
         Used when an upload lost its foreground tracker. Original budgets,
@@ -386,6 +386,11 @@ class RecoveryController:
             progress = self._running(op, attempt, plan, job, chain,
                 self.w3.eth.get_block('latest')['timestamp'], file_id)
             if progress.phase == 'retry':
+                if allow_retry:
+                    # The original upload still owns this operation. Preserve
+                    # its previously approved retry policy, but do not plan or
+                    # fund another attempt in this reconciliation-only call.
+                    return RecoveryProgress('retry', 'Previous funded attempt settled; resume original upload', attempt['number'])
                 self.journal.set_status(self.operation, 'needs_action',
                     'Previous attempt settled; review the original upload before retrying')
                 return RecoveryProgress('settled', 'Previous funded attempt settled', attempt['number'])

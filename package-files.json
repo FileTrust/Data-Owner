@@ -201,14 +201,14 @@
       "size": 34956
     },
     "core/do_actions.py": {
+      "mode": 420,
       "sha256": "97582a286a585ec54abef850c254d094c09c8f70c13d3ef8126e142656687f07",
-      "size": 274433,
-      "mode": 420
+      "size": 274433
     },
     "core/do_chain.py": {
+      "mode": 420,
       "sha256": "8e9c45a4e23ced6d0847df50d458873d58f4c09768893d157e6c0d9a7793172b",
-      "size": 91719,
-      "mode": 420
+      "size": 91719
     },
     "core/do_config.py": {
       "mode": 420,
@@ -257,8 +257,8 @@
     },
     "core/do_dkg_recovery.py": {
       "mode": 420,
-      "sha256": "3c3538f86118d2d7258aee3780c264345b63bb921ccad2fb2dba0d83a2aeff63",
-      "size": 29090
+      "sha256": "a88f8a91a696acd825011fecbf03cd27c2b0bcfac043a2d4ec86b7b960ddd933",
+      "size": 29509
     },
     "core/do_dkg_selection.py": {
       "mode": 420,
@@ -301,9 +301,9 @@
       "size": 2922
     },
     "core/do_network.py": {
+      "mode": 420,
       "sha256": "e738c1a74f3521e5ed17a485d62aace4f833202ba7d1c72cd2f2bdad4fd4cd03",
-      "size": 132209,
-      "mode": 420
+      "size": 132209
     },
     "core/do_panels.py": {
       "mode": 420,
