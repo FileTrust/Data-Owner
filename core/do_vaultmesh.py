@@ -528,9 +528,19 @@ def get_vk_peer_from_gui(show_error: bool = True) -> str | None:
     return peers[0]
 
 
-def run_vaultmesh_cmd(cmd: list[str]) -> str:
+def run_vaultmesh_cmd(cmd: list[str], *, allow_error_response: bool = False) -> str:
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
+        if allow_error_response:
+            # The delete CLI exits nonzero for both retryable and terminal
+            # protocol responses. Preserve structured stdout for the deletion
+            # classifier; the exit code never means authorization succeeded.
+            try:
+                response = json.loads(result.stdout)
+            except (TypeError, ValueError):
+                response = None
+            if isinstance(response, dict) and type(response.get("ok")) is bool:
+                return result.stdout.strip()
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result.stdout.strip()
 

@@ -207,8 +207,8 @@
     },
     "core/do_chain.py": {
       "mode": 420,
-      "sha256": "8e9c45a4e23ced6d0847df50d458873d58f4c09768893d157e6c0d9a7793172b",
-      "size": 91719
+      "sha256": "9cba48ee68d6c6a7d9f2696f6ca3da39dc65b34b485f1f0706ebfc3b8f56158b",
+      "size": 91818
     },
     "core/do_config.py": {
       "mode": 420,
@@ -397,8 +397,8 @@
     },
     "core/do_vaultmesh.py": {
       "mode": 420,
-      "sha256": "ea8a194d8f3163d9038a886233a04448ac4c19106f168299faf153cb9c452074",
-      "size": 178884
+      "sha256": "07c626cccd1fa32728067e635310ccc841a153684e7bd8cec5ca05981cd087fc",
+      "size": 179457
     },
     "core/ft_desktop_lifecycle.py": {
       "mode": 420,
@@ -462,8 +462,8 @@
     },
     "core/test_deletion_redrive.py": {
       "mode": 420,
-      "sha256": "6d86423f7a843eade0a48cc3ca99b2ddf97d41617596cad340cc8e0d4152b0c8",
-      "size": 10846
+      "sha256": "f1fce126b52587888d6ea25caefa861b5b6c3014440b4f5a2cb5a23d65d26e7e",
+      "size": 10993
     },
     "core/test_deployment_manifest.py": {
       "mode": 420,

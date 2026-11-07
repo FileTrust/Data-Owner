@@ -178,7 +178,8 @@ def _install_fake_do_chain_deps(recorded):
     # Fake do_vaultmesh (VM): records the exact command it was asked to run.
     VM = types.ModuleType(pkg + ".do_vaultmesh")
 
-    def _run(cmd):
+    def _run(cmd, *, allow_error_response=False):
+        recorded["allow_error_response"] = allow_error_response
         recorded["cmd"] = list(cmd)
         return recorded["vk_output"]
     VM.run_vaultmesh_cmd = _run
@@ -240,6 +241,7 @@ def test_redrive_passes_secret_to_command_but_never_logs_it():
     resp = fn("peer-abc", "0x" + "11" * 32, secret)
 
     # The secret must be present in the command handed to the VK runner...
+    assert recorded["allow_error_response"] is True
     assert recorded["cmd"] is not None
     assert "--deletion-auth-secret" in recorded["cmd"]
     assert secret in recorded["cmd"]

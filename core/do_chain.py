@@ -1710,7 +1710,7 @@ def redrive_deletion_request(
         "--delete-sig", signature,
     ])
     try:
-        out = VM.run_vaultmesh_cmd(cmd)
+        out = VM.run_vaultmesh_cmd(cmd, allow_error_response=True)
         resp = json.loads(out)
     except Exception:
         # Transport, timeout, or malformed output -> retryable (empty dict). Never log the
@@ -1754,7 +1754,7 @@ def request_file_deletion(vk_peer: str, commitment_hash: str, deletion_auth_secr
             "--delete-issued-at", str(issued_at),
             "--delete-sig", signature,
         ])
-        out = VM.run_vaultmesh_cmd(cmd)
+        out = VM.run_vaultmesh_cmd(cmd, allow_error_response=True)
         resp = json.loads(out)
         vk_ok = bool(resp.get("ok"))
         if vk_ok and resp.get("accepted"):
@@ -1791,11 +1791,11 @@ def request_file_deletion(vk_peer: str, commitment_hash: str, deletion_auth_secr
                 return False, (
                     "deletion pending: declared on-chain; VK lifecycle recovery is still running"
                 )
-            if resp.get("pending"):
+            if not resp.get("terminal") and (resp.get("pending") or resp.get("retryable")):
                 phase = str(resp.get("phase", "") or "unknown")
                 return False, (
-                    f"deletion pending: VK durable lifecycle phase={phase}; "
-                    "on-chain confirmation check is temporarily unavailable"
+                    f"deletion pending: VK request phase={phase}; "
+                    "retry or authoritative confirmation is still required"
                 )
             summary = f"deletion failed (VK): {resp.get('error', 'unknown error')}"
             L.log(f"[deletion] {summary}")
