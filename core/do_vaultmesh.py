@@ -1004,18 +1004,6 @@ def confirm_registration_finality(item: dict) -> tuple[bool, str]:
 
     reasons: list[str] = []
 
-    if tx_hash:
-        ev_ok, ev_reason = verify_registration_tx_event(tx_hash, receipt)
-        if not ev_ok:
-            item["fileRegTxEventVerified"] = False
-            if "pending" not in ev_reason:
-                reasons.append(f"tx event: {ev_reason}")
-        else:
-            item["fileRegTxEventVerified"] = True
-            L.log(f"[file_reg] tx event verified  txHash={tx_hash[:18]}...  {ev_reason}")
-    else:
-        item["fileRegTxEventVerified"] = None
-
     if item.get("receiptVerified") is not True:
         reasons.append("VK receipt signature is not verified")
     if item.get("commitmentHashVerified") is not True:
@@ -1030,6 +1018,27 @@ def confirm_registration_finality(item: dict) -> tuple[bool, str]:
     else:
         rec_ok = False
         reasons.append("private VK receipt is missing")
+
+    # A recovered store may already exist on-chain even when the broadcast
+    # response (and therefore the receipt's optional hash metadata) was lost.
+    # Enrich only public journal metadata; never rewrite the signed receipt.
+    if not tx_hash and rec_ok and not reasons:
+        from .do_registration_evidence import recover_registration_transaction
+        try:
+            tx_hash = recover_registration_transaction(C.w3, C.file_registration_sc, receipt)
+        except Exception as exc:
+            reasons.append(f"registration evidence pending: {exc}")
+    item["fileRegTxEventVerified"] = False
+    if tx_hash:
+        ev_ok, ev_reason = verify_registration_tx_event(tx_hash, receipt)
+        if not ev_ok:
+            reasons.append(f"tx event: {ev_reason}")
+        else:
+            item["registrationTxHash"] = tx_hash
+            item["fileRegTxEventVerified"] = True
+            L.log(f"[file_reg] tx event verified  txHash={tx_hash[:18]}...  {ev_reason}")
+    elif not any(reason.startswith("registration evidence pending:") for reason in reasons):
+        reasons.append("registration transaction evidence is missing")
 
     partition_link_ok = False
     partition_link_reason = "file registration not verified"

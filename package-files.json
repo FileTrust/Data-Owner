@@ -330,6 +330,11 @@
       "sha256": "a281555bf73e6b7c78b58b4764bade42062aaad27449b1a9d8ea4b7331df9837",
       "size": 51443
     },
+    "core/do_registration_evidence.py": {
+      "mode": 420,
+      "sha256": "234016693379edcb0d8b6ab4756e53fd64050393c7fd7e138c86cfebf344d74a",
+      "size": 6835
+    },
     "core/do_release_checks.py": {
       "mode": 420,
       "sha256": "7027b87ee16f9db336a9b9d1e4363f158e1632ccc6dc9af90e5402c34f634bfd",
@@ -392,8 +397,8 @@
     },
     "core/do_vaultmesh.py": {
       "mode": 420,
-      "sha256": "dec16115e943cb19e97c77a20e34ec88f474eda93baafef821291941b48ae547",
-      "size": 178218
+      "sha256": "ea8a194d8f3163d9038a886233a04448ac4c19106f168299faf153cb9c452074",
+      "size": 178884
     },
     "core/ft_desktop_lifecycle.py": {
       "mode": 420,
