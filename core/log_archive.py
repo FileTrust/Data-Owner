@@ -202,6 +202,8 @@ def archive_logs(
     max_total_mb: int = DEFAULTS["log_max_total_mb"],
     keep_days_by_name: dict | None = None,
     exclude: tuple = (),
+    io_lock=None,
+    before_rotate=None,
 ) -> dict:
     """Run one tidy-up pass over *log_dir*. Never raises.
 
@@ -227,7 +229,14 @@ def archive_logs(
                 continue
             if any(fragment in path.name for fragment in exclude):
                 continue
-            if _rotate(path, max_bytes, today):
+            if io_lock is None:
+                rotated = _rotate(path, max_bytes, today)
+            else:
+                with io_lock:
+                    if before_rotate is not None:
+                        before_rotate()
+                    rotated = _rotate(path, max_bytes, today)
+            if rotated:
                 result["rotated"] += 1
 
         archives = [

@@ -55,6 +55,9 @@ _UPLOAD_STATE_TRANSITIONS = {
 }
 _recovery_lock = threading.RLock()
 _recovered_bases: set[str] = set()
+_BUSY_TIMEOUT_MS = 30000
+_JOURNAL_MODE_BUSY_TIMEOUT_MS = 250
+_BUSY_ERRORCODES = {5, 6}
 
 
 class PieceJournalError(RuntimeError):
@@ -116,37 +119,52 @@ def _secure_sqlite_files(path: Path) -> None:
                 pass
 
 
+def _is_busy_error(exc: sqlite3.Error) -> bool:
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is not None:
+        return code in _BUSY_ERRORCODES
+    return "is locked" in str(exc).lower()
+
+
 def _enable_wal(connection: sqlite3.Connection) -> None:
-    """Put the journal in WAL mode, without failing when someone else has it.
+    """Put the journal in WAL mode without failing a concurrent open.
 
-    Changing the journal mode takes a brief exclusive lock, and that one
-    statement does not honour `busy_timeout`: SQLite refuses immediately with
-    "database is locked" if any other connection has the file open. Every other
-    statement here waits up to thirty seconds; this one never did, so running
-    it on every open turned ordinary overlap into a failed save -- eight
-    threads registering pieces at once lost one about a fifth of the time.
+    Switching the journal mode rewrites the database header, so it needs a
+    brief exclusive lock and can be refused with "database is locked" while
+    another connection is using a journal that is not WAL yet -- at once if
+    that connection holds a write lock, or only once the busy timeout runs out
+    if it holds a read lock.  Running it on every open therefore turned
+    ordinary overlap into a failed save.
 
-    The mode is a property of the file and survives, so it only has to be set
-    once, by whoever gets there first. Reading it costs no lock. A refusal
-    after that is not a problem worth reporting: the mode is either already
-    WAL, or the connection that is holding the lock is in the middle of setting
-    it.
+    The mode belongs to the file and survives, so it only has to be set once,
+    by whichever connection creates the journal.  Asking an already-WAL
+    database for WAL takes no lock at all, so read the mode first and skip the
+    write in the common case.  Losing the one race that remains is not a
+    failure worth reporting: the winner has already made the mode durable, and
+    this connection is correct either way, because every statement reads the
+    mode from the file when it begins a transaction.
     """
     try:
         current = connection.execute("PRAGMA journal_mode").fetchone()
-        mode = str(current[0]).lower() if current else ""
-        if mode == "wal":
-            return
     except sqlite3.Error:
-        pass  # fall through and try to set it
+        current = None  # fall through and try to set it
+    if current is not None and str(current[0]).strip().lower() == "wal":
+        return
 
+    # Only reached while the journal is being created.  Do not spend the whole
+    # busy timeout on a race that does not matter -- a reader on a not-yet-WAL
+    # database would otherwise stall this open for the full thirty seconds.
+    connection.execute(f"PRAGMA busy_timeout = {_JOURNAL_MODE_BUSY_TIMEOUT_MS}")
     try:
         connection.execute("PRAGMA journal_mode = WAL")
-    except sqlite3.OperationalError:
-        # Another connection is setting it, or has it open. Either way this
-        # connection is usable; a genuinely unusable database fails on the
-        # statements below, which do wait their turn.
-        pass
+    except sqlite3.OperationalError as exc:
+        # A genuinely unusable database still fails on the statements below,
+        # which do wait their turn and do report.
+        if not _is_busy_error(exc):
+            raise
+    finally:
+        connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+
 
 
 def _connect(base_dir: str | os.PathLike) -> sqlite3.Connection:
@@ -155,7 +173,7 @@ def _connect(base_dir: str | os.PathLike) -> sqlite3.Connection:
     try:
         connection = sqlite3.connect(path, timeout=30.0)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
         _enable_wal(connection)
         connection.execute("PRAGMA synchronous = FULL")
         connection.execute("PRAGMA foreign_keys = ON")

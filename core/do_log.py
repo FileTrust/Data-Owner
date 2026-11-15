@@ -4,6 +4,7 @@
 import atexit
 import datetime
 import os
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -18,7 +19,7 @@ _T1  = "#FFFFFF"; _T2  = "#8899cc"; _MUT = "#3E497A"; _FNT = "Catamaran"
 _RED = "#f87171"; _AMB = "#fde68a"; _SKY = "#7dd3fc"
 
 # ── File logger ───────────────────────────────────────────────────────────────
-_LOG_LOCK = threading.Lock()
+_LOG_LOCK = threading.RLock()
 _LOG_FILE = None
 
 
@@ -49,6 +50,8 @@ def _start_log_archiver(log_dir: Path) -> None:
         log_archive.start_daily(
             log_dir,
             keep_days_by_name={"transactions": 90, "calls": 3},
+            io_lock=_LOG_LOCK,
+            before_rotate=_ensure_current_log,
             on_done=lambda s: s.get("rotated") and _write_raw(
                 f"[log-archive] zipped {s['rotated']}, removed "
                 f"{s['deleted_old'] + s['deleted_for_size']} old archive(s)"
@@ -75,17 +78,32 @@ def _close_file_logger() -> None:
 atexit.register(_close_file_logger)
 
 
+def _ensure_current_log() -> None:
+    global _LOG_FILE
+    if _LOG_FILE is None:
+        return
+    target = Path(_LOG_FILE.name).parent / ("do_" + datetime.datetime.now().strftime("%Y-%m-%d") + ".log")
+    if Path(_LOG_FILE.name) != target or not target.exists():
+        _LOG_FILE.close()
+        _LOG_FILE = open(target, "a", encoding="utf-8", buffering=1)
+
+
 def _write_raw(line: str) -> None:
     if _LOG_FILE is None:
         return
     with _LOG_LOCK:
         try:
+            _ensure_current_log()
             _LOG_FILE.write(line + "\n")
         except Exception:
             pass
 
 
 def _write_log(level: str, text: str, tag: str = "") -> None:
+    if sys.exc_info()[1] is not None:
+        from .ft_diagnostics import capture_current
+        capture_current()
+        level = "ERROR"
     if _LOG_FILE is None:
         return
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -139,18 +157,19 @@ def _echo_to_log_window(line: str) -> None:
 
 
 def log(text: str, tag: str = "") -> None:
-    # Move to the window's thread before doing anything at all. The file write
-    # used to happen first and the whole call was then rescheduled, so every
-    # line logged from a worker thread was written to the file twice -- with two
-    # timestamps, which is exactly why it never read as a duplicate.
+    _write_log("INFO", text, tag)
+    # Save immediately on the caller's thread; dispatch only the UI work.
     if S.root is not None and threading.current_thread() is not threading.main_thread():
         try:
-            S.root.after(0, lambda t=text, tg=tag: log(t, tg))
+            S.root.after(0, lambda t=text: _display_log(t))
             return
         except Exception:
-            pass  # the window is going away; still write the line below
+            return  # the file was already written even if the window is closing
 
-    _write_log("INFO", text, tag)
+    _display_log(text)
+
+
+def _display_log(text: str) -> None:
     _echo_to_log_window(text)
     if S.result_text is None:
         return

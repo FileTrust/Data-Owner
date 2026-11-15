@@ -2,8 +2,8 @@
   "files": {
     ".dockerignore": {
       "mode": 420,
-      "sha256": "0ac2f071adad0323b60fb6d1164452ee994191f28ab3b49cab2d66ac4c237852",
-      "size": 3044
+      "sha256": "792644f9f89671979d913d742664585843193c5872808f740cd315bf3c716289",
+      "size": 3194
     },
     ".gitignore": {
       "mode": 420,
@@ -12,8 +12,8 @@
     },
     "DO.py": {
       "mode": 493,
-      "sha256": "c984c0fb6723cedef6ca67e7a5904dfdc5e9d44c1c897973b9fab18ffd60633b",
-      "size": 4797
+      "sha256": "71dcfd3b03052cd5975d47ddb9cf57088d6b35a36d3238e828ebd58da60dbc66",
+      "size": 4865
     },
     "Dockerfile": {
       "mode": 420,
@@ -292,8 +292,8 @@
     },
     "core/do_log.py": {
       "mode": 420,
-      "sha256": "35e99d783db95d142a021c01cf131ce6c5d496b2f2605967c62e7f6e3c57b524",
-      "size": 9231
+      "sha256": "33b8caf8d9f168950ac71126e0b551398d7de5b121d646942b480c8cb9bc511b",
+      "size": 9693
     },
     "core/do_map_tiles.py": {
       "mode": 420,
@@ -312,8 +312,8 @@
     },
     "core/do_piece_journal.py": {
       "mode": 420,
-      "sha256": "ca9cdd06530313ce0a079b4a8d8e30472599f6720bfb9e185459fb9c76338542",
-      "size": 69070
+      "sha256": "d5409d28449e5a035f9bf6b6533274a46e1cfa78fdf9d9f7724039972a6dd030",
+      "size": 69893
     },
     "core/do_progress.py": {
       "mode": 420,
@@ -387,8 +387,8 @@
     },
     "core/do_ui.py": {
       "mode": 420,
-      "sha256": "6da5878f6f355d142fa112f35282c44a8f2bc5c8ea904804018e1ffaa45d031e",
-      "size": 69372
+      "sha256": "3c5080d553edf464469fa38a3648db13ead99607edc25259aa3d4ec887dbbb1d",
+      "size": 69573
     },
     "core/do_v2_crypto.py": {
       "mode": 420,
@@ -404,6 +404,16 @@
       "mode": 420,
       "sha256": "585b2cbb9b35824b8c8e972c0f9683b489237817e73573ac55649173b17a107d",
       "size": 379
+    },
+    "core/ft_diagnostics.py": {
+      "mode": 420,
+      "sha256": "9b5a2440a61ed519dd4969148cd1253f8eec3d3cbeaa89d522cade3cdbef2256",
+      "size": 23618
+    },
+    "core/ft_diagnostics_policy.json": {
+      "mode": 420,
+      "sha256": "c4977266625f20b4b6e9ada965f3a0707b7beb7e5f5bab7260611fe85ab0433e",
+      "size": 4738
     },
     "core/ft_discovery.py": {
       "mode": 420,
@@ -452,28 +462,23 @@
     },
     "core/log_archive.py": {
       "mode": 420,
-      "sha256": "e00e45fd16935db543bc85dfcf688889ace3ce42e4c2e6337e04b0c853deb06b",
-      "size": 11250
+      "sha256": "ad91766c06c40f2a0b59613dd79a039643efd4623b0cfbda1ed124968efde111",
+      "size": 11558
     },
-    "core/test_deletion_monitor.py": {
-      "mode": 420,
-      "sha256": "e1cb5760d40be3991c3bcd9a9d761744fa8a01d250e3491fbd73ecde18910f63",
-      "size": 6513
-    },
-    "core/test_deletion_redrive.py": {
-      "mode": 420,
-      "sha256": "f1fce126b52587888d6ea25caefa861b5b6c3014440b4f5a2cb5a23d65d26e7e",
-      "size": 10993
-    },
-    "core/test_deployment_manifest.py": {
-      "mode": 420,
-      "sha256": "a44cf632b035969b61dd115e9ee92f2e220f585dc7f700b7191ee55cee92bb5b",
-      "size": 7165
+    "diagnostics.py": {
+      "mode": 493,
+      "sha256": "fdd9b7ec22c61a7941414caffb7aa1d109a971939bf5f0b0d23117e6ef7c4e37",
+      "size": 212
     },
     "docker.sh": {
       "mode": 493,
       "sha256": "084a6abccd2295ac91bbfded69de8ffe7cdd886bc077022e168a3e35ab97cae1",
       "size": 11682
+    },
+    "docs/piece-journal-wal-lock-fix.md": {
+      "mode": 420,
+      "sha256": "71a424b158f94520707b3350a5079837c5322a357822442b178b7c7d4c014def",
+      "size": 4860
     },
     "ft_package.py": {
       "mode": 420,

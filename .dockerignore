@@ -69,6 +69,7 @@
 !core/do_progress.py
 !core/do_records.py
 !core/do_recovery.py
+!core/do_registration_evidence.py
 !core/do_release_checks.py
 !core/do_renewal.py
 !core/do_rpc.py
@@ -83,6 +84,8 @@
 !core/do_v2_crypto.py
 !core/do_vaultmesh.py
 !core/ft_desktop_lifecycle.py
+!core/ft_diagnostics.py
+!core/ft_diagnostics_policy.json
 !core/ft_discovery.py
 !core/ft_keyvault.py
 !core/ft_netconfig.py
@@ -96,7 +99,10 @@
 !core/test_deletion_monitor.py
 !core/test_deletion_redrive.py
 !core/test_deployment_manifest.py
+!diagnostics.py
 !docker.sh
+!docs/
+!docs/piece-journal-wal-lock-fix.md
 !ft_package.py
 !ft_transfer.py
 !ft_update_bootstrap.py
